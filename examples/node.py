@@ -1,6 +1,7 @@
 import sys
 import numpy as np
-from numpy.random import seed, uniform
+from logging import basicConfig, INFO
+from numpy.random import uniform
 from topolink import NodeHandle
 
 
@@ -27,17 +28,16 @@ def gossip_check(node_handle: NodeHandle) -> None:
         print(f"Node {node_name} updated state: {state}")
 
 
-if __name__ == "__main__":
-    if len(sys.argv) > 1:
-        node_name = "".join(sys.argv[1:])
-    else:
-        print("Usage: python node.py <node_name>")
-        sys.exit(1)
+basicConfig(level=INFO)
 
-    node_name = sys.argv[1]
-    nh = NodeHandle(node_name, server_address="localhost:5555")
+if len(sys.argv) > 1:
+    node_name = "".join(sys.argv[1:])
+else:
+    print("Usage: python node.py <node_name>")
+    sys.exit(1)
 
-    input("Press Enter to start the node...")
+node_name = sys.argv[1]
+nh = NodeHandle(node_name)
 
-    sync_check(nh)
-    # gossip_check(nh)
+# sync_check(nh)
+gossip_check(nh)

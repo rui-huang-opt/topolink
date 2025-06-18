@@ -1,4 +1,4 @@
-from .topology import Topology
+from .graph import Graph
 from .node_handle import NodeHandle
 
-__all__ = ["Topology", "NodeHandle"]
+__all__ = ["Graph", "NodeHandle"]

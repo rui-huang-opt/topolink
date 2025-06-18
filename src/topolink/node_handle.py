@@ -1,3 +1,4 @@
+from logging import info
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
@@ -26,8 +27,9 @@ class NodeHandle:
 
     def register(self) -> None:
         if self._server_address is None:
-            print("Please enter the server address (IP:Port):")
-            self._server_address = input().strip()
+            self._server_address = input(
+                "Please enter the server address (IP:Port):"
+            ).strip()
 
         self._req.connect(f"tcp://{self._server_address}")
         self._req.send(self._local_ip.encode() + b":" + str(self._port).encode())
@@ -41,9 +43,9 @@ class NodeHandle:
             neighbor_name, neighbor_address = part.decode().split(", ")
             self._neighbors[neighbor_name] = neighbor_address
 
-        print(f"Node {self._name} registered with server at {self._server_address}")
-        print(f"Neighbors: {self._neighbors}")
-        print(f"Node address: {self._local_ip}:{self._port}")
+        info(f"Node {self._name} registered with server at {self._server_address}")
+        info(f"Neighbors: {self._neighbors}")
+        info(f"Node address: {self._local_ip}:{self._port}")
 
     def connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbors.items():
@@ -62,7 +64,7 @@ class NodeHandle:
             if neighbor_name in self._neighbors:
                 connected.add(neighbor_name)
 
-        print(f"Connected to neighbors: {', '.join(self._neighbors)}")
+        info(f"Connected to neighbors: {', '.join(self._neighbors)}")
 
     def send(self, neighbor: str, state: NDArray[float64]) -> None:
         if neighbor not in self._neighbors:
