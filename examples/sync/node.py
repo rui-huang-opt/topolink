@@ -26,7 +26,7 @@ else:
     print("Usage: python node.py <node_name>")
     sys.exit(1)
 
-nh = NodeHandle(node_name, server_address="localhost:5555")
+nh = NodeHandle(node_name)
 
 print("Synchronization functionality check...")
 
