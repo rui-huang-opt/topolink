@@ -25,6 +25,10 @@ class NodeHandle:
         self.register()
         self.connect_to_neighbors()
 
+    @property
+    def name(self) -> str:
+        return self._name
+
     def register(self) -> None:
         if self._server_address is None:
             self._server_address = input(
