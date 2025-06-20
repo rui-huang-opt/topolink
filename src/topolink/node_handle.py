@@ -112,7 +112,7 @@ class NodeHandle:
             neighbor_states.append(frombuffer(neighbor_state_bytes, dtype=float64))
         return neighbor_states
 
-    def compute_laplacian(self, state: NDArray[float64]) -> NDArray[float64]:
+    def laplacian(self, state: NDArray[float64]) -> NDArray[float64]:
         state_bytes = state.tobytes()
         for neighbor in self._neighbor_addresses:
             self._router.send_multipart([neighbor.encode(), state_bytes])
