@@ -25,6 +25,9 @@ class NodeHandle:
         self._register()
         self._connect_to_neighbors()
 
+    def __del__(self) -> None:
+        self._unregister()
+
     @property
     def name(self) -> str:
         return self._name
@@ -50,6 +53,14 @@ class NodeHandle:
         info(f"Node {self._name} registered with server at {self._server_address}")
         info(f"Neighbors: {self._neighbors}")
         info(f"Node address: {self._local_ip}:{self._port}")
+
+    def _unregister(self) -> None:
+        self._req.send(b"unregister")
+        reply = self._req.recv()
+        if reply != b"OK":
+            raise RuntimeError("Failed to unregister node.")
+
+        info(f"Node {self._name} unregistered from server.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbors.items():
