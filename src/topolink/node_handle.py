@@ -1,4 +1,6 @@
 from logging import info
+from typing import KeysView
+from functools import cached_property
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
@@ -31,6 +33,10 @@ class NodeHandle:
     @property
     def name(self) -> str:
         return self._name
+
+    @cached_property
+    def neighbor_names(self) -> KeysView[str]:
+        return self._neighbor_addresses.keys()
 
     def _register(self) -> None:
         if self._server_address is None:
