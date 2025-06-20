@@ -69,15 +69,7 @@ class Graph:
         nx_graph.add_nodes_from(self._node_names)
         nx_graph.add_edges_from(self._edge_pairs)
 
-        options = {
-            "pos": nx.spring_layout(nx_graph),
-            "with_labels": True,
-            "node_size": 700,
-            "node_color": "lightblue",
-            "font_size": 10,
-            "font_color": "black",
-            "font_weight": "bold",
-        }
+        options = {"pos": nx.spring_layout(nx_graph), "with_labels": True}
 
         options.update(kwargs)
 
