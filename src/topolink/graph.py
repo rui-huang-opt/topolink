@@ -1,7 +1,7 @@
 import networkx as nx
 from logging import info
 from functools import cached_property
-from zmq import Context, ROUTER
+from zmq import Context, SyncSocket, ROUTER
 from matplotlib.axes import Axes
 from .utils import get_local_ip
 
@@ -17,24 +17,14 @@ class Graph:
 
         self._node_names = node_names
         self._edge_pairs = edge_pairs
+        self._address = address
 
         if not self.is_connected:
             raise ValueError("The provided topology must be connected.")
 
         self._local_ip = get_local_ip()
-
         self._address_map: dict[str, str] = {}
-
         self._context = Context()
-        self._router = self._context.socket(ROUTER)
-        if address is None:
-            port = self._router.bind_to_random_port("tcp://*")
-            self._address = f"{self._local_ip}:{port}"
-        else:
-            self._router.bind(f"tcp://{address}")
-            self._address = address
-
-        info(f"Server running on {self._address}")
 
     @cached_property
     def num_nodes(self) -> int:
@@ -43,6 +33,19 @@ class Graph:
     @cached_property
     def num_edges(self) -> int:
         return len(self._edge_pairs)
+    
+    @cached_property
+    def _router(self) -> SyncSocket:
+        router = self._context.socket(ROUTER)
+        if self._address is None:
+            port = router.bind_to_random_port("tcp://*")
+            self._address = f"{self._local_ip}:{port}"
+        else:
+            router.bind(f"tcp://{self._address}")
+
+        info(f"Server running on {self._address}")
+
+        return router
 
     @cached_property
     def neighbor_map(self) -> dict[str, list[str]]:
