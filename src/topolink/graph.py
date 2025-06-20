@@ -137,10 +137,7 @@ class Graph:
 
             if message == b"unregister":
                 nodes_unregistered.add(name)
+                self._router.send_multipart([name.encode(), b"", b"OK"])
                 info(f"Node {name} has unregistered.")
             else:
                 info(f"Received message from {name}: {message.decode()}")
-
-        for name in nodes_unregistered:
-            self._router.send_multipart([name.encode(), b"", b"OK"])
-            info(f"Sent unregister confirmation to {name}")
