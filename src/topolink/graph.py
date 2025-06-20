@@ -2,6 +2,7 @@ import networkx as nx
 from logging import info
 from functools import cached_property
 from zmq import Context, ROUTER
+from matplotlib.axes import Axes
 from .utils import get_local_ip
 
 
@@ -62,20 +63,16 @@ class Graph:
 
         return is_connected
 
-    def plot(self, **kwargs) -> None:
-        import matplotlib.pyplot as plt
-
+    def draw(self, ax: Axes, **kwargs) -> None:
         nx_graph = nx.Graph()
         nx_graph.add_nodes_from(self._node_names)
         nx_graph.add_edges_from(self._edge_pairs)
 
-        options = {"pos": nx.spring_layout(nx_graph), "with_labels": True}
+        options = {"pos": nx.spring_layout(nx_graph), "ax": ax, "with_labels": True}
 
         options.update(kwargs)
 
         nx.draw(nx_graph, **options)
-        plt.title("Network Topology")
-        plt.show()
 
     def deploy(self) -> None:
         try:
