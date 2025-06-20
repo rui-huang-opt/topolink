@@ -22,14 +22,14 @@ class NodeHandle:
         self._neighbors: dict[str, str] = {}
         self._dealers: dict[str, SyncSocket] = {}
 
-        self.register()
-        self.connect_to_neighbors()
+        self._register()
+        self._connect_to_neighbors()
 
     @property
     def name(self) -> str:
         return self._name
 
-    def register(self) -> None:
+    def _register(self) -> None:
         if self._server_address is None:
             self._server_address = input(
                 "Please enter the server address (IP:Port):"
@@ -51,7 +51,7 @@ class NodeHandle:
         info(f"Neighbors: {self._neighbors}")
         info(f"Node address: {self._local_ip}:{self._port}")
 
-    def connect_to_neighbors(self) -> None:
+    def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbors.items():
             dealer = self._context.socket(DEALER)
             dealer.setsockopt(IDENTITY, self._name.encode())

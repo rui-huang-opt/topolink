@@ -1,7 +1,7 @@
 import networkx as nx
 from logging import info
-from zmq import Context, ROUTER
 from functools import cached_property
+from zmq import Context, ROUTER
 from .utils import get_local_ip
 
 
@@ -89,10 +89,9 @@ class Graph:
         try:
             self._register_nodes()
             self._notify_nodes_of_neighbors()
-        except Exception as e:
+        finally:
             self._router.close()
             self._context.term()
-            raise e
 
     def _register_nodes(self) -> None:
         while len(self._address_map) < self.num_nodes:
