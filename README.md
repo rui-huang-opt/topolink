@@ -80,7 +80,7 @@ It does **not** participate in subsequent communication between nodes.
 The `NodeHandle` class primarily provides each node (machine or process) with an interface for communication with other nodes.
 It also encapsulates common graph operators (such as the Laplacian operator), making it convenient to perform distributed computation and message passing within a network topology.
 
-### Example: Laplacian Consensus
+### NodeHandle Example: Laplacian Consensus
 
 The **consensus algorithm** is widely used in distributed systems to ensure that all nodes gradually reach agreement on their states through local communication. For an undirected graph, the state update of each node can be represented using the Laplacian matrix $L$:
 
