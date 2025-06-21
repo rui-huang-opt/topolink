@@ -68,7 +68,7 @@ To deploy an undirected graph network using `topolink`, follow these steps:
    Specify the nodes and their connections as shown in the usage example above.
 
 2. **Initialize the Graph on the Server**  
-   On the server machine, create the `Graph` object and start the server with `serve()`.
+   On the server machine, create the `Graph` object and start the server with `deploy()`.
 
 3. **Join the Network from Each Node**  
    On each participating machine or process, create a `NodeHandle` object with the node's name and the server address.
