@@ -1,0 +1,124 @@
+# Topology Link
+This Python package `topolink` facilitates the configuration of graph topologies in physical networks using mathematical notation.
+
+## Installation
+Install via pip:
+
+```bash
+pip install git+https://github.com/rui-huang-opt/topolink.git
+```
+
+Or, for development:
+
+```bash
+git clone https://github.com/rui-huang-opt/topolink.git
+cd topolink
+pip install -e .
+```
+
+## Undirected Graphs
+An **undirected graph** represents pairwise connections between objects without directional constraints. Formally defined as:
+
+`G = (V, E)` where:  
+- `V`: Set of vertices/nodes  
+- `E`: Set of unordered edges `{u,v}` (connections have no direction)
+
+### Key Properties:
+1. **Symmetric Relationships**  
+   If `(u,v)` exists, `(v,u)` is the same edge
+
+2. **Neighbor Communication**  
+   For any edge `(u, v)` in `E`, nodes `u` and `v` can directly communicate with each other.
+
+### Undirected Graph Example: Ring Topology
+
+#### **Graph Definition**
+- `V = {1, 2, 3, 4, 5}`
+- `E = {(1, 2), (2, 3), (3, 4), (4, 5), (5, 1)}`
+
+#### **Define and Visualize the Graph**
+
+```python
+# On the server (graph coordinator) machine
+from topolink import Graph
+
+nodes = ["1", "2", "3", "4", "5"]
+edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
+
+# Create the graph object
+ring = Graph(nodes, edges)
+
+# Visualize the topology
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots()
+ring.draw(ax)
+plt.show()
+```
+
+#### **Visualization**
+
+![Ring Topology Example](docs/images/ring_topology.png)
+
+## Deploying an Undirected Graph Network
+
+To deploy an undirected graph network using `topolink`, follow these steps:
+
+1. **Define Nodes and Edges**  
+   Specify the nodes and their connections as shown in the usage example above.
+
+2. **Initialize the Graph on the Server**  
+   On the server machine, create the `Graph` object and start the server with `serve()`.
+
+3. **Join the Network from Each Node**  
+   On each participating machine or process, create a `NodeHandle` object with the node's name and the server address.
+
+> **Note:**  
+> The graph server only assists in setting up the network according to the mathematical topology definition.
+It does **not** participate in subsequent communication between nodes.
+
+The `NodeHandle` class primarily provides each node (machine or process) with an interface for communication with other nodes.
+It also encapsulates common graph operators (such as the Laplacian operator), making it convenient to perform distributed computation and message passing within a network topology.
+
+#### **Server Side: Define and Launch the Graph**
+
+```python
+# On the server (graph coordinator) machine
+from topolink import Graph
+
+nodes = ["1", "2", "3", "4", "5"]
+edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
+
+# Create the graph object
+ring = Graph(nodes, edges, address="tcp://localhost:5555")
+
+# Start the graph server to coordinate node joining
+ring.deploy()
+```
+
+#### **Node Side: Join the Network**
+
+```python
+# On each node machine/process
+from topolink import NodeHandle
+
+node_name = "1"  # Change this for each node (e.g., "2", "3", ...)
+server_addr = "tcp://<graph-server-ip>:5555"
+
+# Connect to the graph server and join the network
+nh = NodeHandle(node_name, server_address)
+
+# Achieve state convergence across all nodes through neighbor communication
+import numpy as np
+
+np.random.seed(int(node_name))
+state = np.random.uniform(-100.0, 100.0, 3)
+
+print(f"Node {node_name} initial state: {state}")
+
+for k in range(40):
+   lap_state = nh.laplacian(state)
+   state -= 0.45 * lap_state
+
+print(f"Node {node_name} final state: {state})
+```
