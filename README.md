@@ -80,6 +80,29 @@ It does **not** participate in subsequent communication between nodes.
 The `NodeHandle` class primarily provides each node (machine or process) with an interface for communication with other nodes.
 It also encapsulates common graph operators (such as the Laplacian operator), making it convenient to perform distributed computation and message passing within a network topology.
 
+### Example: Laplacian Consensus
+
+The **consensus algorithm** is widely used in distributed systems to ensure that all nodes gradually reach agreement on their states through local communication. For an undirected graph, the state update of each node can be represented using the Laplacian matrix $L$:
+
+Let $x_i(k)$ denote the state of node $i$ at iteration $k$, and $x(k) = [x_1(k), x_2(k), \dots, x_n(k)]^\top$ be the vector of all node states. The Laplacian matrix $L$ is defined as:
+
+$$
+L_{ij} = 
+\begin{cases}
+\text{deg}(i), & i = j \\
+-1, & (i, j) \in E \\
+0, & \text{otherwise}
+\end{cases}
+$$
+
+The consensus iteration formula is:
+
+$$
+x(k+1) = x(k) - \alpha L x(k)
+$$
+
+where $\alpha > 0$ is the step size parameter. In each iteration, nodes only exchange information with their neighbors. Eventually, all $x_i$ converge to the same value (e.g., the initial average).
+
 #### **Server Side: Define and Launch the Graph**
 
 ```python
@@ -114,11 +137,13 @@ import numpy as np
 np.random.seed(int(node_name))
 state = np.random.uniform(-100.0, 100.0, 3)
 
+alpha = 0.45
+
 print(f"Node {node_name} initial state: {state}")
 
 for k in range(40):
    lap_state = nh.laplacian(state)
-   state -= 0.45 * lap_state
+   state -= alpha * lap_state
 
 print(f"Node {node_name} final state: {state})
 ```
