@@ -113,7 +113,7 @@ nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 # Create the graph object
-ring = Graph(nodes, edges, address="tcp://localhost:5555")
+ring = Graph(nodes, edges, address="localhost:5555")
 
 # Start the graph server to coordinate node joining
 ring.deploy()
@@ -126,7 +126,7 @@ ring.deploy()
 from topolink import NodeHandle
 
 node_name = "1"  # Change this for each node (e.g., "2", "3", ...)
-server_addr = "tcp://<graph-server-ip>:5555"
+server_addr = "<graph-server-ip>:5555"
 
 # Connect to the graph server and join the network
 nh = NodeHandle(node_name, server_address)
