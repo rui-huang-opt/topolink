@@ -147,3 +147,6 @@ for k in range(40):
 
 print(f"Node {node_name} final state: {state})
 ```
+
+#### **Results plot**
+![Consensus](docs/images/consensus.png)
