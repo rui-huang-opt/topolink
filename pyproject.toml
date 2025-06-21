@@ -6,8 +6,9 @@ build-backend = "setuptools.build_meta"
 requires-python = ">=3.10"
 name = "topolink"
 version = "0.1.0"
+license = { text = "MIT" }
 description = "A Python package for deploying distributed undirected network topologies on a set of nodes."
-authors = [{ name = "Rui Huang", email = "R.Huang@lboro.ac.uk" }]
+authors = [{ name = "Rui Huang", email = "ruihuang0421@gmail.com" }]
 
 dependencies = [
     "numpy>=2.2.6",
