@@ -141,7 +141,7 @@ alpha = 0.45
 
 print(f"Node {node_name} initial state: {state}")
 
-for k in range(40):
+for k in range(50):
    lap_state = nh.laplacian(state)
    state -= alpha * lap_state
 
