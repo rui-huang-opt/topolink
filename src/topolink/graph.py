@@ -1,5 +1,5 @@
 import networkx as nx
-from logging import info
+from logging import getLogger
 from functools import cached_property
 from zmq import Context, SyncSocket, ROUTER
 from matplotlib.axes import Axes
@@ -22,6 +22,7 @@ class Graph:
         if not self.is_connected:
             raise ValueError("The provided topology must be connected.")
 
+        self._logger = getLogger("topolink.Graph")
         self._local_ip = get_local_ip()
         self._address_map: dict[str, str] = {}
         self._context = Context()
@@ -33,7 +34,7 @@ class Graph:
     @cached_property
     def num_edges(self) -> int:
         return len(self._edge_pairs)
-    
+
     @cached_property
     def _router(self) -> SyncSocket:
         router = self._context.socket(ROUTER)
@@ -43,7 +44,7 @@ class Graph:
         else:
             router.bind(f"tcp://{self._address}")
 
-        info(f"Server running on {self._address}")
+        self._logger.info(f"Server running on {self._address}")
 
         return router
 
@@ -81,7 +82,7 @@ class Graph:
         try:
             self._register_nodes()
             self._notify_nodes_of_neighbors()
-            # More deployment logic can be added here if needed.
+            # TODO: More deployment logic can be added here if needed.
             self._unregister_nodes()
         finally:
             self._router.close()
@@ -93,15 +94,15 @@ class Graph:
             name = name_bytes.decode()
 
             if name not in self._node_names:
-                info(f"Unknown node {name} tried to register")
+                self._logger.info(f"Unknown node {name} tried to register")
                 self._router.send_multipart([name_bytes, b"", b"Error: Unknown node"])
                 continue
 
             address = address_bytes.decode()
             self._address_map[name] = address
-            info(f"Node {name} registered with address {address}")
+            self._logger.info(f"Node {name} registered with address {address}")
 
-        info("All nodes registered. Server is now ready.")
+        self._logger.info("All nodes registered. Server is now ready.")
 
     def _notify_nodes_of_neighbors(self) -> None:
         a_map = self._address_map
@@ -115,7 +116,7 @@ class Graph:
             message = [addr.encode() for addr in neighbor_addresses[i]]
             self._router.send_multipart([i.encode(), b"", *message])
 
-        info("Sent neighbor addresses to all nodes.")
+        self._logger.info("Sent neighbor addresses to all nodes.")
 
     def _unregister_nodes(self) -> None:
         nodes_unregistered: set[str] = set()
@@ -124,12 +125,12 @@ class Graph:
             name = name_bytes.decode()
 
             if name not in self._node_names:
-                info(f"Unknown node {name} sent a message {message.decode()}")
+                self._logger.info(f"Unknown node {name}. Cannot unregister.")
                 continue
 
             if message == b"unregister":
                 nodes_unregistered.add(name)
                 self._router.send_multipart([name.encode(), b"", b"OK"])
-                info(f"Node {name} has unregistered.")
+                self._logger.info(f"Node {name} has unregistered.")
             else:
-                info(f"Received message from {name}: {message.decode()}")
+                self._logger.info(f"Received message from {name}: {message.decode()}")

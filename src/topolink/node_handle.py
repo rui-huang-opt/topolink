@@ -1,4 +1,4 @@
-from logging import info
+from logging import getLogger
 from typing import KeysView
 from functools import cached_property
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
@@ -12,6 +12,7 @@ class NodeHandle:
         self._name = name
         self._server_address = server_address
 
+        self._logger = getLogger(f"topolink.NodeHandle.{name}")
         self._local_ip = get_local_ip()
 
         self._context = Context()
@@ -34,6 +35,10 @@ class NodeHandle:
     def name(self) -> str:
         return self._name
 
+    @property
+    def num_neighbors(self) -> int:
+        return len(self._neighbor_addresses)
+
     @cached_property
     def neighbor_names(self) -> KeysView[str]:
         return self._neighbor_addresses.keys()
@@ -47,18 +52,17 @@ class NodeHandle:
         self._req.connect(f"tcp://{self._server_address}")
         self._req.send(self._local_ip.encode() + b":" + str(self._port).encode())
         reply = self._req.recv_multipart()
-        for part in reply:
-            if part == b"Error: Unknown node":
-                raise ValueError(
-                    "Unknown node. Please check the server address and node name."
-                )
 
+        if reply[0] == b"Error: Unknown node":
+            raise ValueError("Unknown node. Please check the node name.")
+
+        for part in reply:
             neighbor_name, neighbor_address = part.decode().split(", ")
             self._neighbor_addresses[neighbor_name] = neighbor_address
 
-        info(f"Node {self._name} registered with server at {self._server_address}")
-        info(f"Neighbor addresses: {self._neighbor_addresses}")
-        info(f"Node address: {self._local_ip}:{self._port}")
+        self._logger.info(f"Registered node {self._name} at {self._server_address}")
+        self._logger.info(f"Neighbor addresses: {self._neighbor_addresses}")
+        self._logger.info(f"Node address: {self._local_ip}:{self._port}")
 
     def _unregister(self) -> None:
         self._req.send(b"unregister")
@@ -66,7 +70,7 @@ class NodeHandle:
         if reply != b"OK":
             raise RuntimeError("Failed to unregister node.")
 
-        info(f"Node {self._name} unregistered from server.")
+        self._logger.info(f"Node {self._name} unregistered from server.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbor_addresses.items():
@@ -79,13 +83,13 @@ class NodeHandle:
             dealer.send(b"")
 
         connected = set()
-        while len(connected) < len(self._neighbor_addresses):
+        while len(connected) < self.num_neighbors:
             client_id, _ = self._router.recv_multipart()
             neighbor_name = client_id.decode()
             if neighbor_name in self._neighbor_addresses:
                 connected.add(neighbor_name)
 
-        info(f"Connected to neighbors: {', '.join(self._neighbor_addresses)}")
+        self._logger.info("Connected to all neighbors.")
 
     def send(self, neighbor: str, state: NDArray[float64]) -> None:
         if neighbor not in self._neighbor_addresses:
@@ -97,6 +101,7 @@ class NodeHandle:
     def recv(self, neighbor: str) -> NDArray[float64]:
         if neighbor not in self._dealers:
             raise ValueError(f"Dealer for neighbor {neighbor} is not registered.")
+
         neighbor_state_bytes = self._dealers[neighbor].recv()
         return frombuffer(neighbor_state_bytes, dtype=float64)
 
