@@ -1,9 +1,11 @@
 from logging import getLogger
+from json import loads
 from typing import KeysView
 from functools import cached_property
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
+from .types import NeighborInfo
 from .utils import get_local_ip
 
 
@@ -23,6 +25,7 @@ class NodeHandle:
         self._port = self._router.bind_to_random_port("tcp://*")
 
         self._neighbor_addresses: dict[str, str] = {}
+        self._neighbor_weights: dict[str, float] = {}
         self._dealers: dict[str, SyncSocket] = {}
 
         self._register()
@@ -39,9 +42,13 @@ class NodeHandle:
     def num_neighbors(self) -> int:
         return len(self._neighbor_addresses)
 
-    @cached_property
+    @property
     def neighbor_names(self) -> KeysView[str]:
         return self._neighbor_addresses.keys()
+
+    @cached_property
+    def weight(self) -> float:
+        return 1 - sum(self._neighbor_weights.values())
 
     def _register(self) -> None:
         if self._server_address is None:
@@ -57,8 +64,12 @@ class NodeHandle:
             raise ValueError("Unknown node. Please check the node name.")
 
         for part in reply:
-            neighbor_name, neighbor_address = part.decode().split(", ")
-            self._neighbor_addresses[neighbor_name] = neighbor_address
+            neighbor_info: NeighborInfo = loads(part.decode())
+            name = neighbor_info["name"]
+            address = neighbor_info["address"]
+            weight = neighbor_info["weight"]
+            self._neighbor_addresses[name] = address
+            self._neighbor_weights[name] = weight
 
         self._logger.info(f"Registered node {self._name} at {self._server_address}")
         self._logger.info(f"Neighbor addresses: {self._neighbor_addresses}")
@@ -103,6 +114,7 @@ class NodeHandle:
             raise ValueError(f"Dealer for neighbor {neighbor} is not registered.")
 
         neighbor_state_bytes = self._dealers[neighbor].recv()
+
         return frombuffer(neighbor_state_bytes, dtype=float64)
 
     def broadcast(self, state: NDArray[float64]) -> None:
@@ -115,6 +127,7 @@ class NodeHandle:
         for dealer in self._dealers.values():
             neighbor_state_bytes = dealer.recv()
             neighbor_states.append(frombuffer(neighbor_state_bytes, dtype=float64))
+
         return neighbor_states
 
     def laplacian(self, state: NDArray[float64]) -> NDArray[float64]:
@@ -127,6 +140,22 @@ class NodeHandle:
             n_state_bytes = dealer.recv()
             neighbor_states.append(frombuffer(n_state_bytes, dtype=float64))
 
-        bias = state * len(neighbor_states) - sum(neighbor_states)
+        laplacian = state * len(neighbor_states) - sum(neighbor_states)
 
-        return bias
+        return laplacian
+
+    def weighted_mix(self, state: NDArray[float64]) -> NDArray[float64]:
+        state_bytes = state.tobytes()
+        for neighbor in self._neighbor_addresses:
+            self._router.send_multipart([neighbor.encode(), state_bytes])
+
+        weighted_neighbor_states: list[NDArray[float64]] = []
+        for neighbor, dealer in self._dealers.items():
+            n_state_bytes = dealer.recv()
+            neighbor_state = frombuffer(n_state_bytes, dtype=float64)
+            weight = self._neighbor_weights[neighbor]
+            weighted_neighbor_states.append(neighbor_state * weight)
+
+        mixed_state = state * self.weight + sum(weighted_neighbor_states)
+
+        return mixed_state

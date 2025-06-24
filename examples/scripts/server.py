@@ -3,8 +3,8 @@ from topolink import Graph
 
 basicConfig(level=INFO)
 
-node_names = ["1", "2", "3", "4", "5"]
-edge_pairs = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
+nodes = ["1", "2", "3", "4", "5"]
+edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
-graph = Graph(node_names, edge_pairs)
+graph = Graph(nodes, edges)
 graph.deploy()
