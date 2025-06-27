@@ -46,7 +46,7 @@ nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 # Create the graph object
-ring = Graph(nodes, edges)
+ring = Graph.from_nodes_and_edges(nodes, edges)
 
 # Visualize the topology
 import matplotlib.pyplot as plt
@@ -119,22 +119,6 @@ ring = Graph(nodes, edges, address="localhost:5555")
 ring.deploy()
 ```
 
-```
-INFO:topolink.Graph:Server running on 192.168.1.100:5555
-INFO:topolink.Graph:Node 1 registered with address 192.168.1.103:39327
-INFO:topolink.Graph:Node 2 registered with address 192.168.1.104:42357
-INFO:topolink.Graph:Node 3 registered with address 192.168.1.105:45715
-INFO:topolink.Graph:Node 4 registered with address 192.168.1.106:34531
-INFO:topolink.Graph:Node 5 registered with address 192.168.1.107:41959
-INFO:topolink.Graph:All nodes registered. Server is now ready.
-INFO:topolink.Graph:Sent neighbor addresses to all nodes.
-INFO:topolink.Graph:Node 3 has unregistered.
-INFO:topolink.Graph:Node 1 has unregistered.
-INFO:topolink.Graph:Node 5 has unregistered.
-INFO:topolink.Graph:Node 4 has unregistered.
-INFO:topolink.Graph:Node 2 has unregistered.
-```
-
 #### **Node Side: Join the Network**
 
 ```python
@@ -165,53 +149,28 @@ print(f"Node {node_name} final state: {state})
 ```
 
 ```
-INFO:topolink.NodeHandle.1:Registered node 1 at 192.168.1.100:5555
-INFO:topolink.NodeHandle.1:Neighbor addresses: {'2': '192.168.1.104:42357', '5': '192.168.1.107:41959'}
-INFO:topolink.NodeHandle.1:Node address: 192.168.1.103:39327
-INFO:topolink.NodeHandle.1:Connected to all neighbors.
 Node 1 initial state: [-16.59559906  44.06489869 -99.97712504]
 Node 1 final state: [  3.71351278  14.89452413 -19.19659572]
-INFO:topolink.NodeHandle.1:Node 1 unregistered from server.
 ```
 
 ```
-INFO:topolink.NodeHandle.2:Registered node 2 at 192.168.1.100:5555
-INFO:topolink.NodeHandle.2:Neighbor addresses: {'1': '192.168.1.103:39327', '3': '192.168.1.105:45715'}
-INFO:topolink.NodeHandle.2:Node address: 192.168.1.104:42357
-INFO:topolink.NodeHandle.2:Connected to all neighbors.
 Node 2 initial state: [-12.80101957 -94.81475363   9.93249558]
 Node 2 final state: [  3.71351278  14.89452413 -19.19659572]
-INFO:topolink.NodeHandle.2:Node 2 unregistered from server.
 ```
 
 ```
-INFO:topolink.NodeHandle.3:Registered node 3 at 192.168.1.100:5555
-INFO:topolink.NodeHandle.3:Neighbor addresses: {'2': '192.168.1.104:42357', '4': '192.168.1.106:34531'}
-INFO:topolink.NodeHandle.3:Node address: 192.168.1.105:45715
-INFO:topolink.NodeHandle.3:Connected to all neighbors.
 Node 3 initial state: [ 10.15958051  41.62956452 -41.81905222]
 Node 3 final state: [  3.71351278  14.89452413 -19.19659573]
-INFO:topolink.NodeHandle.3:Node 3 unregistered from server.
 ```
 
 ```
-INFO:topolink.NodeHandle.4:Registered node 4 at 192.168.1.100:5555
-INFO:topolink.NodeHandle.4:Neighbor addresses: {'3': '192.168.1.105:45715', '5': '192.168.1.107:41959'}
-INFO:topolink.NodeHandle.4:Node address: 192.168.1.106:34531
-INFO:topolink.NodeHandle.4:Connected to all neighbors.
 Node 4 initial state: [93.4059678   9.44644984 94.53687199]
 Node 4 final state: [  3.71351278  14.89452413 -19.19659572]
-INFO:topolink.NodeHandle.4:Node 4 unregistered from server.
 ```
 
 ```
-INFO:topolink.NodeHandle.5:Registered node 5 at 192.168.1.100:5555
-INFO:topolink.NodeHandle.5:Neighbor addresses: {'4': '192.168.1.106:34531', '1': '192.168.1.103:39327'}
-INFO:topolink.NodeHandle.5:Node address: 192.168.1.107:41959
-INFO:topolink.NodeHandle.5:Connected to all neighbors.
 Node 5 initial state: [-55.60136578  74.14646124 -58.65616893]
 Node 5 final state: [  3.71351278  14.89452413 -19.19659573]
-INFO:topolink.NodeHandle.5:Node 5 unregistered from server.
 ```
 
 #### **Results plot**

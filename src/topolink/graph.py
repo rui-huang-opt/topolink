@@ -2,6 +2,7 @@ import networkx as nx
 from json import dumps
 from logging import getLogger
 from functools import cached_property
+from typing import Any
 from zmq import Context, SyncSocket, ROUTER
 from matplotlib.axes import Axes
 from numpy import float64, allclose, ones
@@ -12,18 +13,89 @@ from .utils import get_local_ip
 
 
 class Graph:
+    """
+    A class representing a network graph for distributed systems.
+    This class allows for the creation, manipulation, and deployment of a real-world network graph
+    using mathematical representations such as mixing matrices or node-edge lists.
+
+    Parameters
+    ----------
+    nodes : NodeInput, optional
+        A list of nodes in the graph. If not provided, an empty graph is created.
+    edges : EdgeInput, optional
+        A list of edges in the graph. If not provided, an empty graph is created.
+    address : str, optional
+        The address to bind the server socket to. If not provided, a random port is used.
+    *args : Any
+        Additional positional arguments.
+    **kwargs : Any
+        Additional keyword arguments. If `nx_graph` is provided, it initializes the graph directly with
+        a NetworkX graph. This is intended for internal use only and should not be set from outside this package.
+        It is primarily used by alternative constructors (such as from_mixing_matrix) to initialize the graph structure efficiently.
+    """
+
     def __init__(
-        self, nx_graph: nx.Graph | None = None, address: str | None = None
+        self,
+        nodes: NodeInput | None = None,
+        edges: EdgeInput | None = None,
+        address: str | None = None,
+        *args: Any,
+        **kwargs: Any,
     ) -> None:
         super().__init__()
 
         self._address = address
-        self._nx_graph = nx.Graph() if nx_graph is None else nx_graph
+
+        # If a NetworkX graph is provided, use it directly.
+        # Note: The `nx_graph` attribute is intended for internal use only and should not be set from outside this package.
+        # It is primarily used by alternative constructors (such as from_mixing_matrix) to initialize the graph structure efficiently.
+        if "nx_graph" in kwargs:
+            self._nx_graph: nx.Graph = kwargs["nx_graph"]
+        else:
+            self._nx_graph = nx.Graph()
+            self._nx_graph.add_nodes_from(nodes or [])
+            self._nx_graph.add_edges_from(edges or [])
 
         self._registered_addresses: dict[str, str] = {}
         self._logger = getLogger("topolink.Graph")
         self._local_ip = get_local_ip()
         self._context = Context()
+
+    @classmethod
+    def from_mixing_matrix(
+        cls,
+        mixing_matrix: NDArray[float64],
+        address: str | None = None,
+        nodes: list[str] | None = None,
+    ) -> "Graph":
+        """
+        Create a Graph instance from a mixing matrix.
+        The mixing matrix must be symmetric and double-stochastic.
+
+        Parameters
+        ----------
+        mixing_matrix : NDArray[float64]
+            A square matrix representing the mixing coefficients between nodes.
+        address : str, optional
+            The address to bind the server socket to. If not provided, a random port is used.
+        nodes : list[str], optional
+            A list of self defined node names. If not provided, nodes will be named sequentially as "1", "2", ..., "n".
+        """
+        if not allclose(mixing_matrix, mixing_matrix.T):
+            raise ValueError("The mixing matrix must be symmetric.")
+
+        ones_vec = ones(mixing_matrix.shape[0])
+        if not allclose(np_sum(mixing_matrix, axis=1), ones_vec):
+            raise ValueError("The mixing matrix must be double-stochastic.")
+
+        nodelist = nodes or [f"{i + 1}" for i in range(mixing_matrix.shape[0])]
+
+        nx_graph: nx.Graph = nx.from_numpy_array(
+            mixing_matrix, create_using=nx.Graph, nodelist=nodelist  # type: ignore[arg-type]
+        )
+        nx_graph.remove_edges_from(nx.selfloop_edges(nx_graph))
+
+        return cls(nx_graph=nx_graph, address=address)
 
     @property
     def nodes(self) -> NodeView:
@@ -66,42 +138,6 @@ class Graph:
     def add_edges(self, edges: EdgeInput) -> None:
         self._nx_graph.add_edges_from(edges)
 
-    @classmethod
-    def from_nodes_and_edges(
-        cls,
-        nodes: NodeInput,
-        edges: EdgeInput,
-        address: str | None = None,
-    ) -> "Graph":
-        nx_graph = nx.Graph()
-        nx_graph.add_nodes_from(nodes)
-        nx_graph.add_edges_from(edges)
-
-        return cls(nx_graph=nx_graph, address=address)
-
-    @classmethod
-    def from_mixing_matrix(
-        cls,
-        mixing_matrix: NDArray[float64],
-        address: str | None = None,
-        nodes: list[str] | None = None,
-    ) -> "Graph":
-        if not allclose(mixing_matrix, mixing_matrix.T):
-            raise ValueError("The mixing matrix must be symmetric.")
-
-        ones_vec = ones(mixing_matrix.shape[0])
-        if not allclose(np_sum(mixing_matrix, axis=1), ones_vec):
-            raise ValueError("The mixing matrix must be double-stochastic.")
-
-        nodelist = nodes or [f"{i + 1}" for i in range(mixing_matrix.shape[0])]
-
-        nx_graph: nx.Graph = nx.from_numpy_array(
-            mixing_matrix, create_using=nx.Graph, nodelist=nodelist  # type: ignore[arg-type]
-        )
-        nx_graph.remove_edges_from(nx.selfloop_edges(nx_graph))
-
-        return cls(nx_graph=nx_graph, address=address)
-
     def draw(self, ax: Axes, **kwargs) -> None:
         nx_graph = self._nx_graph
 
@@ -134,6 +170,9 @@ class Graph:
         return neighbor_info_list
 
     def deploy(self) -> None:
+        """
+        Deploy the graph by registering nodes, notifying them of their neighbors and waiting for unregistration.
+        """
         try:
             if not self.is_connected:
                 raise ValueError("The provided topology must be connected.")
@@ -169,7 +208,7 @@ class Graph:
 
             self._router.send_multipart([i.encode(), b"", *messages])
 
-        self._logger.info("Sent neighbor addresses to all nodes.")
+        self._logger.info("Sent neighbor information to all nodes.")
 
     def _unregister_nodes(self) -> None:
         nodes_unregistered: list[str] = []
