@@ -46,7 +46,7 @@ nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 # Create the graph object
-ring = Graph.from_nodes_and_edges(nodes, edges)
+ring = Graph(nodes, edges)
 
 # Visualize the topology
 import matplotlib.pyplot as plt
