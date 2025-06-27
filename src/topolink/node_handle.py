@@ -24,6 +24,7 @@ class NodeHandle:
         self._router = self._context.socket(ROUTER)
         self._port = self._router.bind_to_random_port("tcp://*")
 
+        self._weight = 1.0
         self._neighbor_addresses: dict[str, str] = {}
         self._neighbor_weights: dict[str, float] = {}
         self._dealers: dict[str, SyncSocket] = {}
@@ -46,10 +47,6 @@ class NodeHandle:
     def neighbor_names(self) -> KeysView[str]:
         return self._neighbor_addresses.keys()
 
-    @cached_property
-    def weight(self) -> float:
-        return 1 - sum(self._neighbor_weights.values())
-
     def _register(self) -> None:
         if self._server_address is None:
             self._server_address = input(
@@ -66,10 +63,10 @@ class NodeHandle:
         for part in reply:
             neighbor_info: NeighborInfo = loads(part.decode())
             name = neighbor_info["name"]
-            address = neighbor_info["address"]
-            weight = neighbor_info["weight"]
-            self._neighbor_addresses[name] = address
-            self._neighbor_weights[name] = weight
+            self._neighbor_addresses[name] = neighbor_info["address"]
+            self._neighbor_weights[name] = neighbor_info["weight"]
+
+        self._weight = 1 - sum(self._neighbor_weights.values())
 
         self._logger.info(f"Registered node {self._name} at {self._server_address}")
         self._logger.info(f"Neighbor addresses: {self._neighbor_addresses}")
@@ -156,6 +153,6 @@ class NodeHandle:
             weight = self._neighbor_weights[neighbor]
             weighted_neighbor_states.append(neighbor_state * weight)
 
-        mixed_state = state * self.weight + sum(weighted_neighbor_states)
+        mixed_state = state * self._weight + sum(weighted_neighbor_states)
 
         return mixed_state
