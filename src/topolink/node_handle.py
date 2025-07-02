@@ -1,7 +1,6 @@
 from logging import getLogger
 from json import loads
 from typing import KeysView
-from functools import cached_property
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
@@ -120,22 +119,20 @@ class NodeHandle:
             self._router.send_multipart([neighbor.encode(), state_bytes])
 
     def gather(self) -> list[NDArray[float64]]:
-        neighbor_states: list[NDArray[float64]] = []
-        for dealer in self._dealers.values():
-            neighbor_state_bytes = dealer.recv()
-            neighbor_states.append(frombuffer(neighbor_state_bytes, dtype=float64))
-
-        return neighbor_states
+        return [
+            frombuffer(dealer.recv(), dtype=float64)
+            for dealer in self._dealers.values()
+        ]
 
     def laplacian(self, state: NDArray[float64]) -> NDArray[float64]:
         state_bytes = state.tobytes()
         for neighbor in self._neighbor_addresses:
             self._router.send_multipart([neighbor.encode(), state_bytes])
 
-        neighbor_states: list[NDArray[float64]] = []
-        for dealer in self._dealers.values():
-            n_state_bytes = dealer.recv()
-            neighbor_states.append(frombuffer(n_state_bytes, dtype=float64))
+        neighbor_states = [
+            frombuffer(dealer.recv(), dtype=float64)
+            for dealer in self._dealers.values()
+        ]
 
         laplacian = state * len(neighbor_states) - sum(neighbor_states)
 
@@ -146,12 +143,10 @@ class NodeHandle:
         for neighbor in self._neighbor_addresses:
             self._router.send_multipart([neighbor.encode(), state_bytes])
 
-        weighted_neighbor_states: list[NDArray[float64]] = []
-        for neighbor, dealer in self._dealers.items():
-            n_state_bytes = dealer.recv()
-            neighbor_state = frombuffer(n_state_bytes, dtype=float64)
-            weight = self._neighbor_weights[neighbor]
-            weighted_neighbor_states.append(neighbor_state * weight)
+        weighted_neighbor_states = [
+            frombuffer(dealer.recv(), dtype=float64) * self._neighbor_weights[neighbor]
+            for neighbor, dealer in self._dealers.items()
+        ]
 
         mixed_state = state * self._weight + sum(weighted_neighbor_states)
 
