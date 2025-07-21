@@ -119,11 +119,10 @@ class Graph:
 
         if self._address is None:
             port = router.bind_to_random_port("tcp://*")
+            self._address = f"{self._local_ip}:{port}"
         else:
             router.bind(f"tcp://{self._address}")
-            _, port = self._address.split(":")
 
-        self._address = f"{self._local_ip}:{port}"
         self._logger.info(f"Server running on {self._address}")
 
         return router

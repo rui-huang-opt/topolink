@@ -13,7 +13,7 @@ class NodeHandle:
         self._name = name
         self._server_address = server_address
 
-        self._logger = getLogger(f"topolink.NodeHandle.{name}")
+        self._logger = getLogger(f"topolink.NodeHandle")
         self._local_ip = get_local_ip()
 
         self._context = Context()
