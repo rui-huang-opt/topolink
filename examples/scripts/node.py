@@ -45,7 +45,7 @@ else:
     print("Usage: python node.py <node_name>")
     sys.exit(1)
 
-nh = NodeHandle(node_name)
+nh = NodeHandle.create(node_name)
 
 print("Synchronization functionality check...")
 

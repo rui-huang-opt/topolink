@@ -14,8 +14,10 @@ from .utils import get_local_ip
 
 class Graph:
     """
-    Graph represents a network topology using a NetworkX graph and provides methods for managing nodes, edges, and network deployment.
+    Represents a network topology using a NetworkX graph and provides methods for managing nodes, edges, and network deployment.
 
+    Parameters
+    ----------
     nodes : NodeInput | None, optional
         Initial nodes to add to the graph. Can be any iterable accepted by NetworkX.
     edges : EdgeInput | None, optional
@@ -28,6 +30,7 @@ class Graph:
         Additional keyword arguments. If 'nx_graph' is provided, it is used directly as the internal graph.
 
     Attributes
+    ----------
     nodes : NodeView
         View of the nodes in the graph.
     edges : EdgeView
@@ -41,17 +44,17 @@ class Graph:
 
     Methods
     -------
-    from_mixing_matrix(mixing_matrix, address=None, nodes=None)
+    from_mixing_matrix(mixing_matrix, address=None, nodes=None) -> "Graph"
         Alternative constructor to create a Graph from a symmetric, double-stochastic mixing matrix.
-    add_nodes(nodes)
+    add_nodes(nodes) -> None
         Adds nodes to the graph.
-    add_edges(edges)
+    add_edges(edges) -> None
         Adds edges to the graph.
-    draw(ax, **kwargs)
+    draw(ax, **kwargs) -> None
         Draws the graph on a given matplotlib Axes.
-    adjacency(node)
+    adjacency(node) -> AdjView
         Returns the adjacency view for a specified node.
-    deploy()
+    deploy() -> None
         Deploys the network topology by registering nodes, notifying them of their neighbors, and unregistering nodes.
 
     Notes
