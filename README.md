@@ -113,7 +113,7 @@ nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 # Create the graph object
-ring = Graph(nodes, edges, address="localhost:5555")
+ring = Graph(nodes, edges, address="<graph-server-ip>:5555")
 
 # Start the graph server to coordinate node joining
 ring.deploy()
@@ -129,7 +129,7 @@ node_name = "1"  # Change this for each node (e.g., "2", "3", ...)
 server_address = "<graph-server-ip>:5555"
 
 # Connect to the graph server and join the network
-nh = NodeHandle(node_name, server_address)
+nh = NodeHandle.create(node_name, server_address)
 
 # Achieve state convergence across all nodes through neighbor communication
 import numpy as np
@@ -145,7 +145,7 @@ for k in range(50):
    lap_state = nh.laplacian(state)
    state -= alpha * lap_state
 
-print(f"Node {node_name} final state: {state})
+print(f"Node {node_name} final state: {state}")
 ```
 
 ```
