@@ -14,24 +14,51 @@ from .utils import get_local_ip
 
 class Graph:
     """
-    A class representing a network graph for distributed systems.
-    This class allows for the creation, manipulation, and deployment of a real-world network graph
-    using mathematical representations such as mixing matrices or node-edge lists.
+    Graph represents a network topology using a NetworkX graph and provides methods for managing nodes, edges, and network deployment.
 
-    Parameters
-    ----------
-    nodes : NodeInput, optional
-        A list of nodes in the graph. If not provided, an empty graph is created.
-    edges : EdgeInput, optional
-        A list of edges in the graph. If not provided, an empty graph is created.
-    address : str, optional
-        The address to bind the server socket to. If not provided, a random port is used.
+    nodes : NodeInput | None, optional
+        Initial nodes to add to the graph. Can be any iterable accepted by NetworkX.
+    edges : EdgeInput | None, optional
+        Initial edges to add to the graph. Can be any iterable accepted by NetworkX.
+    address : str | None, optional
+        Address to bind the server socket for deployment. If not provided, a random port is used.
     *args : Any
         Additional positional arguments.
     **kwargs : Any
-        Additional keyword arguments. If `nx_graph` is provided, it initializes the graph directly with
-        a NetworkX graph. This is intended for internal use only and should not be set from outside this package.
-        It is primarily used by alternative constructors (such as from_mixing_matrix) to initialize the graph structure efficiently.
+        Additional keyword arguments. If 'nx_graph' is provided, it is used directly as the internal graph.
+
+    Attributes
+    nodes : NodeView
+        View of the nodes in the graph.
+    edges : EdgeView
+        View of the edges in the graph, including edge data.
+    number_of_nodes : int
+        Number of nodes in the graph.
+    number_of_edges : int
+        Number of edges in the graph.
+    is_connected : bool
+        Indicates whether the graph is connected.
+
+    Methods
+    -------
+    from_mixing_matrix(mixing_matrix, address=None, nodes=None)
+        Alternative constructor to create a Graph from a symmetric, double-stochastic mixing matrix.
+    add_nodes(nodes)
+        Adds nodes to the graph.
+    add_edges(edges)
+        Adds edges to the graph.
+    draw(ax, **kwargs)
+        Draws the graph on a given matplotlib Axes.
+    adjacency(node)
+        Returns the adjacency view for a specified node.
+    deploy()
+        Deploys the network topology by registering nodes, notifying them of their neighbors, and unregistering nodes.
+
+    Notes
+    -----
+    - The internal NetworkX graph can be initialized directly via the 'nx_graph' keyword argument.
+    - Deployment methods use ZeroMQ sockets for node registration and communication.
+    - The class ensures the topology is connected before deployment.
     """
 
     def __init__(
@@ -138,6 +165,16 @@ class Graph:
         self._nx_graph.add_edges_from(edges)
 
     def draw(self, ax: Axes, **kwargs) -> None:
+        """
+        Draws the graph using NetworkX's drawing functionality on the provided matplotlib Axes.
+
+        Parameters:
+            ax (Axes): A matplotlib Axes object where the graph will be drawn.
+            **kwargs: Additional keyword arguments passed to `networkx.draw` for customizing the drawing.
+
+        Returns:
+            None
+        """
         nx_graph = self._nx_graph
 
         pos = nx.spring_layout(nx_graph)
@@ -148,6 +185,18 @@ class Graph:
         nx.draw(nx_graph, **options)
 
     def adjacency(self, node: str) -> AdjView:
+        """
+        Returns the adjacency view of the specified node in the graph.
+
+        Parameters:
+            node (str): The identifier of the node whose adjacency is to be retrieved.
+
+        Returns:
+            AdjView: A view of the adjacent nodes and edge data for the given node.
+
+        Raises:
+            KeyError: If the specified node does not exist in the graph.
+        """
         return self._nx_graph[node]
 
     def _get_neighbor_info_list(self, node: str) -> list[NeighborInfo]:
@@ -170,7 +219,12 @@ class Graph:
 
     def deploy(self) -> None:
         """
-        Deploy the graph by registering nodes, notifying them of their neighbors and waiting for unregistration.
+        Deploys the network topology by registering nodes, notifying them of their neighbors,
+        and then unregistering the nodes. Ensures that the topology is connected before deployment.
+        Cleans up resources by closing the router and terminating the context after deployment.
+
+        Raises:
+            ValueError: If the topology is not connected.
         """
         try:
             if not self.is_connected:
