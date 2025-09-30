@@ -1,10 +1,10 @@
-from typing import Iterable, Tuple, Mapping
+from typing import Iterable, Mapping
 
 NodeInput = Iterable[str]
-EdgeInput = Iterable[Tuple[str, str]] | Iterable[Tuple[str, str, Mapping[str, float]]]
+EdgeInput = Iterable[tuple[str, str]]
 
 NodeView = Iterable[str]
-EdgeView = Iterable[Tuple[str, str, Mapping[str, float]]]
+EdgeView = Iterable[tuple[str, str]]
 AdjView = Mapping[str, Mapping[str, float]]
 
 from typing import TypedDict

@@ -133,7 +133,7 @@ class Graph:
 
     @property
     def edges(self) -> EdgeView:
-        return self._nx_graph.edges(data=True)
+        return self._nx_graph.edges
 
     @property
     def number_of_nodes(self) -> int:
