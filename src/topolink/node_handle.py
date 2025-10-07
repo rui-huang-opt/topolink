@@ -1,16 +1,14 @@
-from abc import ABCMeta, abstractmethod
 from logging import getLogger
 from json import loads
 from typing import KeysView
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
-from numpy.random import normal
 from .types import NeighborInfo
 from .utils import get_local_ip
 
 
-class NodeHandle(metaclass=ABCMeta):
+class NodeHandle:
     """
     NodeHandle manages communication and state exchange between a node and its neighbors in a distributed network.
 
@@ -38,8 +36,6 @@ class NodeHandle(metaclass=ABCMeta):
 
     Methods
     -------
-    create(name: str, server_address: str | None = None, noise_std: float | None = None) -> "NodeHandle"
-        Factory method to create a NodeHandle instance (CleanNodeHandle or NoisyNodeHandle).
     send(neighbor: str, state: NDArray[float64]) -> None
         Sends state information to a specified neighbor node.
     recv(neighbor: str) -> NDArray[float64]
@@ -89,43 +85,6 @@ class NodeHandle(metaclass=ABCMeta):
 
     def __del__(self) -> None:
         self._unregister()
-
-    @classmethod
-    def create(
-        cls,
-        name: str,
-        server_address: str | None = None,
-        noise_std: float | None = None,
-    ) -> "NodeHandle":
-        """
-        Factory method to create a NodeHandle instance.
-        Depending on the noise_std parameter, it returns either a CleanNodeHandle or NoisyNodeHandle.
-
-        Parameters
-        ----------
-        name : str
-            The unique identifier for the node.
-        server_address : str | None, optional
-            The address of the central server (IP:Port). If not provided, it will be prompted interactively.
-        noise_std : float | None, optional
-            The standard deviation of the Gaussian noise to be added to the state updates.
-            If None, a CleanNodeHandle is returned. If a positive value is provided, a NoisyNodeHandle is returned.
-
-        Returns
-        -------
-        NodeHandle
-            An instance of CleanNodeHandle or NoisyNodeHandle based on the noise_std parameter.
-
-        Raises
-        ValueError
-            If noise_std is provided but is not positive.
-        """
-        if noise_std is None:
-            return CleanNodeHandle(name, server_address)
-        elif noise_std <= 0:
-            raise ValueError("Noise standard deviation must be positive.")
-        else:
-            return NoisyNodeHandle(name, server_address, noise_std)
 
     @property
     def name(self) -> str:
@@ -191,7 +150,6 @@ class NodeHandle(metaclass=ABCMeta):
 
         self._logger.info("Connected to all neighbors.")
 
-    @abstractmethod
     def send(self, neighbor: str, state: NDArray[float64]) -> None:
         """
         Sends the state information to a specified neighbor node.
@@ -213,7 +171,11 @@ class NodeHandle(metaclass=ABCMeta):
         The state is serialized to bytes before transmission. The message is sent using the router's
         `send_multipart` method, with the neighbor's address and the serialized state.
         """
-        ...
+        if neighbor not in self._neighbor_addresses:
+            raise ValueError(f"Neighbor {neighbor} is not registered.")
+
+        state_bytes = state.tobytes()
+        self._router.send_multipart([neighbor.encode(), state_bytes])
 
     def recv(self, neighbor: str) -> NDArray[float64]:
         """
@@ -241,7 +203,6 @@ class NodeHandle(metaclass=ABCMeta):
 
         return frombuffer(neighbor_state_bytes, dtype=float64)
 
-    @abstractmethod
     def broadcast(self, state: NDArray[float64]) -> None:
         """
         Broadcasts the given state to all neighbor nodes.
@@ -255,7 +216,9 @@ class NodeHandle(metaclass=ABCMeta):
         Returns:
             None
         """
-        ...
+        state_bytes = state.tobytes()
+        for neighbor in self._neighbor_addresses:
+            self._router.send_multipart([neighbor.encode(), state_bytes])
 
     def gather(self) -> list[NDArray[float64]]:
         """
@@ -343,53 +306,3 @@ class NodeHandle(metaclass=ABCMeta):
         mixed_state = state * self._weight + sum(weighted_neighbor_states)
 
         return mixed_state
-
-
-class CleanNodeHandle(NodeHandle):
-    """
-    CleanNodeHandle extends NodeHandle without adding noise to the state updates.
-
-    This class is used for scenarios where noise in the communication is not required, providing a clean implementation
-    of the NodeHandle interface.
-    """
-
-    def send(self, neighbor: str, state: NDArray[float64]) -> None:
-        if neighbor not in self._neighbor_addresses:
-            raise ValueError(f"Neighbor {neighbor} is not registered.")
-
-        state_bytes = state.tobytes()
-        self._router.send_multipart([neighbor.encode(), state_bytes])
-
-    def broadcast(self, state: NDArray[float64]) -> None:
-        state_bytes = state.tobytes()
-        for neighbor in self._neighbor_addresses:
-            self._router.send_multipart([neighbor.encode(), state_bytes])
-
-
-class NoisyNodeHandle(NodeHandle):
-    """
-    NoisyNodeHandle extends NodeHandle to include noise in the state updates.
-
-    This class adds Gaussian noise to the state updates during the consensus process,
-    simulating a more realistic distributed system where nodes may experience noise in their communications.
-    """
-
-    def __init__(
-        self, name: str, server_address: str | None = None, noise_std: float = 0.1
-    ) -> None:
-        super().__init__(name, server_address)
-        self._noise_std = noise_std
-
-    def send(self, neighbor: str, state: NDArray[float64]) -> None:
-        if neighbor not in self._neighbor_addresses:
-            raise ValueError(f"Neighbor {neighbor} is not registered.")
-
-        state_with_noise = state + normal(0, self._noise_std, size=state.shape)
-        state_bytes = state_with_noise.tobytes()
-        self._router.send_multipart([neighbor.encode(), state_bytes])
-
-    def broadcast(self, state: NDArray[float64]) -> None:
-        for neighbor in self._neighbor_addresses:
-            state_with_noise = state + normal(0, self._noise_std, size=state.shape)
-            state_bytes = state_with_noise.tobytes()
-            self._router.send_multipart([neighbor.encode(), state_bytes])
