@@ -1,3 +1,4 @@
+import socket
 import networkx as nx
 from json import dumps
 from logging import getLogger
@@ -10,6 +11,7 @@ from numpy import sum as np_sum
 from numpy.typing import NDArray
 from .types import NodeInput, EdgeInput, NodeView, EdgeView, AdjView, NeighborInfo
 from .utils import get_local_ip
+from .discovery import RegistryAdvertiser
 
 
 class Graph:
@@ -68,13 +70,14 @@ class Graph:
         self,
         nodes: NodeInput | None = None,
         edges: EdgeInput | None = None,
-        address: str | None = None,
+        port: int | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__()
 
-        self._address = address
+        self._host = get_local_ip()
+        self._port = port
 
         # If a NetworkX graph is provided, use it directly.
         # Note: The `nx_graph` attribute is intended for internal use only and should not be set from outside this package.
@@ -88,14 +91,15 @@ class Graph:
 
         self._registered_addresses: dict[str, str] = {}
         self._logger = getLogger("topolink.Graph")
-        self._local_ip = get_local_ip()
         self._context = Context()
+        self._registry_advertiser = RegistryAdvertiser()
+        self._router = self._create_router()
 
     @classmethod
     def from_mixing_matrix(
         cls,
         mixing_matrix: NDArray[float64],
-        address: str | None = None,
+        port: int | None = None,
         nodes: list[str] | None = None,
     ) -> "Graph":
         """
@@ -125,7 +129,7 @@ class Graph:
         )
         nx_graph.remove_edges_from(nx.selfloop_edges(nx_graph))
 
-        return cls(nx_graph=nx_graph, address=address)
+        return cls(nx_graph=nx_graph, port=port)
 
     @property
     def nodes(self) -> NodeView:
@@ -142,20 +146,6 @@ class Graph:
     @property
     def number_of_edges(self) -> int:
         return self._nx_graph.number_of_edges()
-
-    @cached_property
-    def _router(self) -> SyncSocket:
-        router = self._context.socket(ROUTER)
-
-        if self._address is None:
-            port = router.bind_to_random_port("tcp://*")
-            self._address = f"{self._local_ip}:{port}"
-        else:
-            router.bind(f"tcp://{self._address}")
-
-        self._logger.info(f"Server running on {self._address}")
-
-        return router
 
     @property
     def is_connected(self) -> bool:
@@ -240,6 +230,20 @@ class Graph:
         finally:
             self._router.close()
             self._context.term()
+            self._registry_advertiser.unregister()
+
+    def _create_router(self) -> SyncSocket:
+        router = self._context.socket(ROUTER)
+
+        if self._port is None:
+            self._port = router.bind_to_random_port("tcp://*")
+        else:
+            router.bind(f"tcp://*:{self._port}")
+
+        self._registry_advertiser.register(self._host, self._port)
+        self._logger.info(f"Server running on {self._host}:{self._port}")
+
+        return router
 
     def _register_nodes(self) -> None:
         while len(self._registered_addresses) < self.number_of_nodes:
