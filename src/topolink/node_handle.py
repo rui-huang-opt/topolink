@@ -36,10 +36,8 @@ class NodeHandle:
 
     Methods
     -------
-    send(neighbor: str, state: NDArray[float64]) -> None
-        Sends state information to a specified neighbor node.
-    recv(neighbor: str) -> NDArray[float64]
-        Receives state data from a specified neighbor.
+    send_to_all(data_to_send: dict[str, NDArray[float64]]) -> None
+        Sends data to all specified neighbor nodes.
     broadcast(state: NDArray[float64]) -> None
         Broadcasts the given state to all neighbor nodes.
     gather() -> list[NDArray[float64]]
@@ -150,65 +148,26 @@ class NodeHandle:
 
         self._logger.info("Connected to all neighbors.")
 
-    def send(self, neighbor: str, state: NDArray[float64]) -> None:
+    def send_to_all(self, data_to_send: dict[str, NDArray[float64]]) -> None:
         """
-        Sends the state information to a specified neighbor node.
+        Sends data to all specified neighbor nodes.
 
-        Parameters
-        ----------
-        neighbor : str
-            The identifier of the neighbor node to send the state to. Must be registered in `_neighbor_addresses`.
-        state : NDArray[float64]
-            The state data to be sent, represented as a NumPy array of float64 values.
+        Args:
+            data_to_send (dict[str, NDArray[float64]]): A dictionary mapping neighbor names to the data arrays to send.
 
-        Raises
-        ------
-        ValueError
-            If the specified neighbor is not registered in `_neighbor_addresses`.
-
-        Notes
-        -----
-        The state is serialized to bytes before transmission. The message is sent using the router's
-        `send_multipart` method, with the neighbor's address and the serialized state.
+        Returns:
+            None
         """
-        if neighbor not in self._neighbor_addresses:
-            raise ValueError(f"Neighbor {neighbor} is not registered.")
+        for neighbor, state in data_to_send.items():
+            if neighbor not in self._neighbor_addresses:
+                raise ValueError(f"Neighbor {neighbor} not found.")
 
-        state_bytes = state.tobytes()
-        self._router.send_multipart([neighbor.encode(), state_bytes])
-
-    def recv(self, neighbor: str) -> NDArray[float64]:
-        """
-        Receives the state data from a specified neighbor.
-
-        Parameters
-        ----------
-        neighbor : str
-            The identifier of the neighbor node to receive data from.
-
-        Returns
-        -------
-        NDArray[float64]
-            The state data received from the neighbor, as a NumPy array of float64.
-
-        Raises
-        ------
-        ValueError
-            If the dealer for the specified neighbor is not registered.
-        """
-        if neighbor not in self._dealers:
-            raise ValueError(f"Dealer for neighbor {neighbor} is not registered.")
-
-        neighbor_state_bytes = self._dealers[neighbor].recv()
-
-        return frombuffer(neighbor_state_bytes, dtype=float64)
+            state_bytes = state.tobytes()
+            self._router.send_multipart([neighbor.encode(), state_bytes])
 
     def broadcast(self, state: NDArray[float64]) -> None:
         """
         Broadcasts the given state to all neighbor nodes.
-
-        Converts the provided state array to bytes and sends it to each neighbor address
-        using the router's send_multipart method.
 
         Args:
             state (NDArray[float64]): The state array to broadcast to neighbors.
@@ -220,44 +179,29 @@ class NodeHandle:
         for neighbor in self._neighbor_addresses:
             self._router.send_multipart([neighbor.encode(), state_bytes])
 
-    def gather(self) -> list[NDArray[float64]]:
+    def gather(self) -> dict[str, NDArray[float64]]:
         """
-        Receives and collects data from all dealers.
-
-        Iterates over all dealer objects in self._dealers, receives raw byte data from each dealer,
-        and converts the received bytes into NumPy arrays of type float64.
+        Receives and collects data from all neighbors.
 
         Returns:
-            list[numpy.ndarray]: A list of NumPy arrays containing the received data from each dealer.
+            dict[str, NDArray[float64]]: A dictionary mapping neighbor names to their received data arrays.
         """
-        return [
-            frombuffer(dealer.recv(), dtype=float64)
-            for dealer in self._dealers.values()
-        ]
+        return {
+            neighbor: frombuffer(dealer.recv(), dtype=float64)
+            for neighbor, dealer in self._dealers.items()
+        }
 
-    def weighted_gather(self) -> list[NDArray[float64]]:
+    def weighted_gather(self) -> dict[str, NDArray[float64]]:
         """
         Gathers data from all neighbors, applying corresponding weights to each received array.
 
         Returns:
-            list[NDArray[float64]]: A list of weighted arrays, where each array is received from a neighbor
+            dict[str, NDArray[float64]]: A dictionary mapping neighbor names to their weighted data arrays.
             and multiplied by its associated weight.
-        """
-        return [
-            frombuffer(dealer.recv(), dtype=float64) * self._neighbor_weights[neighbor]
-            for neighbor, dealer in self._dealers.items()
-        ]
-
-    def gather_with_name(self) -> dict[str, NDArray[float64]]:
-        """
-        Collects data from all neighbor nodes and returns a dictionary mapping neighbor names to their received data arrays.
-
-        Returns:
-            dict[str, NDArray[float64]]: A dictionary where each key is a neighbor's name and each value is a NumPy array
-            of float64 values received from the corresponding neighbor.
         """
         return {
             neighbor: frombuffer(dealer.recv(), dtype=float64)
+            * self._neighbor_weights[neighbor]
             for neighbor, dealer in self._dealers.items()
         }
 
@@ -278,7 +222,7 @@ class NodeHandle:
         self.broadcast(state)
         neighbor_states = self.gather()
 
-        laplacian = state * len(neighbor_states) - sum(neighbor_states)
+        laplacian = state * len(neighbor_states) - sum(neighbor_states.values())
 
         return laplacian
 
@@ -303,6 +247,6 @@ class NodeHandle:
         self.broadcast(state)
         weighted_neighbor_states = self.weighted_gather()
 
-        mixed_state = state * self._weight + sum(weighted_neighbor_states)
+        mixed_state = state * self._weight + sum(weighted_neighbor_states.values())
 
         return mixed_state
