@@ -59,9 +59,9 @@ class NodeHandle:
     - Laplacian and weighted mixing operations are useful for consensus and distributed optimization algorithms.
     """
 
-    def __init__(self, name: str, server_address: str | None = None) -> None:
+    def __init__(self, name: str, registry_address: str | None = None) -> None:
         self._name = name
-        self._server_address = server_address
+        self._registry_address = registry_address
 
         self._logger = getLogger(f"topolink.NodeHandle")
         self._local_ip = get_local_ip()
@@ -97,12 +97,12 @@ class NodeHandle:
         return self._neighbor_addresses.keys()
 
     def _register(self) -> None:
-        if self._server_address is None:
-            self._server_address = input(
-                "Please enter the server address (IP:Port):"
+        if self._registry_address is None:
+            self._registry_address = input(
+                "Please enter the registry address (IP:Port):"
             ).strip()
 
-        self._req.connect(f"tcp://{self._server_address}")
+        self._req.connect(f"tcp://{self._registry_address}")
         self._req.send(self._local_ip.encode() + b":" + str(self._port).encode())
         reply = self._req.recv_multipart()
 
@@ -117,7 +117,7 @@ class NodeHandle:
 
         self._weight = 1.0 - sum(self._neighbor_weights.values())
 
-        self._logger.info(f"Registered node {self._name} at {self._server_address}")
+        self._logger.info(f"Registered node {self._name} at {self._registry_address}")
         self._logger.info(f"Neighbor addresses: {self._neighbor_addresses}")
         self._logger.info(f"Node address: {self._local_ip}:{self._port}")
 
