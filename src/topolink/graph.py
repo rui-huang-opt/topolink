@@ -22,6 +22,8 @@ class Graph:
         An iterable of node names to initialize the graph. If None, the graph starts empty.
     edges : EdgeInput | None, optional
         An iterable of edges (tuples of node names) to initialize the graph. If None, the graph starts with no edges.
+    name : str, optional
+        The name of the registry service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
     *args : Any
         Additional positional arguments (not used).
     **kwargs : Any
@@ -67,6 +69,7 @@ class Graph:
         self,
         nodes: NodeInput | None = None,
         edges: EdgeInput | None = None,
+        name: str = "default",
         *args: Any,
         **kwargs: Any,
     ) -> None:
@@ -85,11 +88,13 @@ class Graph:
             self._nx_graph.add_edges_from(edges or [])
 
         self._context = Context()
-        self._registry_advertiser = RegistryAdvertiser()
+        self._registry_advertiser = RegistryAdvertiser(name)
 
         self._host = get_local_ip()
         self._router, self._port = self._setup_router()
+
         self._registry_advertiser.register(self._host, self._port)
+        self._logger.info(f"Registering service with name {name}")
 
         self._registered_addresses: dict[str, str] = {}
 

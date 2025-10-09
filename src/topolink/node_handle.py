@@ -23,6 +23,8 @@ class NodeHandle:
     ----------
     name : str
         Unique identifier for the node.
+    graph_name : str, optional
+        Name of the graph to connect to (default is "default"). This should match the name used during graph creation.
 
     Attributes
     ----------
@@ -55,10 +57,10 @@ class NodeHandle:
     - Laplacian and weighted mixing operations are useful for consensus and distributed optimization algorithms.
     """
 
-    def __init__(self, name: str) -> None:
+    def __init__(self, name: str, graph_name: str = "default") -> None:
         self._name = name
 
-        self._registry_ip_addr, self._registry_port = get_registry_info()
+        self._registry_ip_addr, self._registry_port = get_registry_info(graph_name)
 
         self._logger = getLogger(f"topolink.NodeHandle")
         self._local_ip = get_local_ip()

@@ -2,18 +2,18 @@ import socket
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
 
 SERVICE_TYPE = "_topolink._tcp.local."
-SERVICE_NAME = "Topolink Registry Service._topolink._tcp.local."
 
 
 class RegistryAdvertiser:
-    def __init__(self):
+    def __init__(self, name: str):
+        self._name = name
         self._zeroconf = Zeroconf()
         self._service_info: ServiceInfo | None = None
 
     def register(self, ip_addr: str, port: int):
         self._service_info = ServiceInfo(
             SERVICE_TYPE,
-            SERVICE_NAME,
+            self._name + "." + SERVICE_TYPE,
             addresses=[socket.inet_aton(ip_addr)],
             port=port,
             properties={
@@ -53,17 +53,18 @@ class RegistryListener(ServiceListener):
             print(f"Service {name} removed")
 
 
-def get_registry_info() -> tuple[str, int]:
+def get_registry_info(name: str) -> tuple[str, int]:
+    service_name = name + "." + SERVICE_TYPE
     zeroconf_ = Zeroconf()
     try:
         listener = RegistryListener()
         browser = ServiceBrowser(zeroconf_, SERVICE_TYPE, listener)
 
-        while SERVICE_NAME not in listener.services:
+        while service_name not in listener.services:
             pass
 
-        registry_ip_addr: str = listener.services[SERVICE_NAME][0]
-        registry_port: int = listener.services[SERVICE_NAME][1]
+        registry_ip_addr: str = listener.services[service_name][0]
+        registry_port: int = listener.services[service_name][1]
 
         return registry_ip_addr, registry_port
     finally:
