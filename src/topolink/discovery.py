@@ -1,6 +1,8 @@
 import socket
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
-from .config import SERVICE_TYPE, SERVICE_NAME
+
+SERVICE_TYPE = "_topolink._tcp.local."
+SERVICE_NAME = "Topolink Registry Service._topolink._tcp.local."
 
 
 class RegistryAdvertiser:

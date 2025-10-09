@@ -1,7 +1,8 @@
-import sys
 from logging import basicConfig, INFO
 
 basicConfig(level=INFO)
+
+import sys
 
 if len(sys.argv) > 1:
     name = "".join(sys.argv[1:])

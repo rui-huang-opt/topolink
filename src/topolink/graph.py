@@ -1,8 +1,6 @@
-import socket
 import networkx as nx
 from json import dumps
 from logging import getLogger
-from functools import cached_property
 from typing import Any
 from zmq import Context, SyncSocket, ROUTER
 from matplotlib.axes import Axes
@@ -21,32 +19,30 @@ class Graph:
     Parameters
     ----------
     nodes : NodeInput | None, optional
-        Initial nodes to add to the graph. Can be any iterable accepted by NetworkX.
+        An iterable of node names to initialize the graph. If None, the graph starts empty.
     edges : EdgeInput | None, optional
-        Initial edges to add to the graph. Can be any iterable accepted by NetworkX.
-    address : str | None, optional
-        Address to bind the server socket for deployment. If not provided, a random port is used.
+        An iterable of edges (tuples of node names) to initialize the graph. If None, the graph starts with no edges.
     *args : Any
-        Additional positional arguments.
+        Additional positional arguments (not used).
     **kwargs : Any
-        Additional keyword arguments. If 'nx_graph' is provided, it is used directly as the internal graph.
+        Additional keyword arguments. If 'nx_graph' is provided, it will be used directly as the internal graph representation.
 
     Attributes
     ----------
     nodes : NodeView
-        View of the nodes in the graph.
+        A view of the nodes in the graph.
     edges : EdgeView
-        View of the edges in the graph, including edge data.
+        A view of the edges in the graph.
     number_of_nodes : int
-        Number of nodes in the graph.
+        The number of nodes in the graph.
     number_of_edges : int
-        Number of edges in the graph.
+        The number of edges in the graph.
     is_connected : bool
         Indicates whether the graph is connected.
 
     Methods
     -------
-    from_mixing_matrix(mixing_matrix, address=None, nodes=None) -> "Graph"
+    from_mixing_matrix(mixing_matrix, nodes=None) -> "Graph"
         Alternative constructor to create a Graph from a symmetric, double-stochastic mixing matrix.
     add_nodes(nodes) -> None
         Adds nodes to the graph.
@@ -61,23 +57,22 @@ class Graph:
 
     Notes
     -----
-    - The internal NetworkX graph can be initialized directly via the 'nx_graph' keyword argument.
-    - Deployment methods use ZeroMQ sockets for node registration and communication.
-    - The class ensures the topology is connected before deployment.
+    - Uses ZeroMQ for communication between nodes and a central registry.
+    - The graph must be connected before deployment.
+    - The `nx_graph` keyword argument is intended for internal use only and should not be set from outside this package.
+    - The `from_mixing_matrix` method provides a convenient way to create a graph from a mixing matrix, ensuring the matrix is symmetric and double-stochastic.
     """
 
     def __init__(
         self,
         nodes: NodeInput | None = None,
         edges: EdgeInput | None = None,
-        port: int | None = None,
         *args: Any,
         **kwargs: Any,
     ) -> None:
         super().__init__()
 
-        self._host = get_local_ip()
-        self._port = port
+        self._logger = getLogger("topolink.Graph")
 
         # If a NetworkX graph is provided, use it directly.
         # Note: The `nx_graph` attribute is intended for internal use only and should not be set from outside this package.
@@ -89,18 +84,18 @@ class Graph:
             self._nx_graph.add_nodes_from(nodes or [])
             self._nx_graph.add_edges_from(edges or [])
 
-        self._registered_addresses: dict[str, str] = {}
-        self._logger = getLogger("topolink.Graph")
         self._context = Context()
         self._registry_advertiser = RegistryAdvertiser()
-        self._router = self._create_router()
+
+        self._host = get_local_ip()
+        self._router, self._port = self._setup_router()
+        self._registry_advertiser.register(self._host, self._port)
+
+        self._registered_addresses: dict[str, str] = {}
 
     @classmethod
     def from_mixing_matrix(
-        cls,
-        mixing_matrix: NDArray[float64],
-        port: int | None = None,
-        nodes: list[str] | None = None,
+        cls, mixing_matrix: NDArray[float64], nodes: list[str] | None = None
     ) -> "Graph":
         """
         Create a Graph instance from a mixing matrix.
@@ -110,8 +105,6 @@ class Graph:
         ----------
         mixing_matrix : NDArray[float64]
             A square matrix representing the mixing coefficients between nodes.
-        address : str, optional
-            The address to bind the server socket to. If not provided, a random port is used.
         nodes : list[str], optional
             A list of self defined node names. If not provided, nodes will be named sequentially as "1", "2", ..., "n".
         """
@@ -129,7 +122,7 @@ class Graph:
         )
         nx_graph.remove_edges_from(nx.selfloop_edges(nx_graph))
 
-        return cls(nx_graph=nx_graph, port=port)
+        return cls(nx_graph=nx_graph)
 
     @property
     def nodes(self) -> NodeView:
@@ -232,18 +225,12 @@ class Graph:
             self._context.term()
             self._registry_advertiser.unregister()
 
-    def _create_router(self) -> SyncSocket:
+    def _setup_router(self) -> tuple[SyncSocket, int]:
         router = self._context.socket(ROUTER)
+        port = router.bind_to_random_port("tcp://*")
+        self._logger.info(f"Registry running on {self._host}:{port}")
 
-        if self._port is None:
-            self._port = router.bind_to_random_port("tcp://*")
-        else:
-            router.bind(f"tcp://*:{self._port}")
-
-        self._registry_advertiser.register(self._host, self._port)
-        self._logger.info(f"Server running on {self._host}:{self._port}")
-
-        return router
+        return router, port
 
     def _register_nodes(self) -> None:
         while len(self._registered_addresses) < self.number_of_nodes:
@@ -259,7 +246,7 @@ class Graph:
             self._registered_addresses[name] = address
             self._logger.info(f"Node {name} registered with address {address}")
 
-        self._logger.info("All nodes registered. Server is now ready.")
+        self._logger.info("All nodes registered. Registry is now ready.")
 
     def _notify_nodes_their_neighbors(self) -> None:
         for i in self.nodes:

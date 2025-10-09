@@ -1,9 +1,7 @@
-import socket
 from logging import getLogger
 from json import loads
 from typing import KeysView
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
-from zeroconf import ServiceBrowser, ServiceListener, Zeroconf
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
 from .types import NeighborInfo
@@ -16,17 +14,15 @@ class NodeHandle:
     NodeHandle manages communication and state exchange between a node and its neighbors in a distributed network.
 
     This class handles:
-        - Registration with a central server
-        - Connection setup with neighbor nodes
-        - Methods for sending, receiving, broadcasting, and gathering state information
-        - Distributed optimization operations such as Laplacian and weighted mixing computations
+    - Registration with a central registry to obtain neighbor information.
+    - Establishing ZeroMQ sockets for communication with neighbors.
+    - Sending and receiving state information to/from neighbors.
+    - Performing operations like broadcasting, gathering, computing Laplacians, and weighted mixing.
 
     Parameters
     ----------
     name : str
         Unique identifier for the node.
-    server_address : str | None, optional
-        Address of the central server (IP:Port). If not provided, it will be prompted interactively.
 
     Attributes
     ----------
@@ -47,8 +43,6 @@ class NodeHandle:
         Receives and collects data from all neighbors.
     weighted_gather() -> list[NDArray[float64]]
         Gathers data from all neighbors, applying corresponding weights.
-    gather_with_name() -> dict[str, NDArray[float64]]
-        Collects data from all neighbor nodes and returns a dictionary mapping neighbor names to their received data arrays.
     laplacian(state: NDArray[float64]) -> NDArray[float64]
         Computes the Laplacian of the given state vector based on the states of neighboring nodes.
     weighted_mix(state: NDArray[float64]) -> NDArray[float64]
@@ -58,7 +52,6 @@ class NodeHandle:
     -----
     - Uses ZeroMQ sockets for communication.
     - State information is exchanged as NumPy arrays of float64, serialized to bytes.
-    - Node must be registered with the server before interacting with neighbors.
     - Laplacian and weighted mixing operations are useful for consensus and distributed optimization algorithms.
     """
 

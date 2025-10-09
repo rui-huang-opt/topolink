@@ -1,6 +1,7 @@
-def get_local_ip() -> str:
-    from socket import socket, AF_INET, SOCK_DGRAM
+from socket import socket, AF_INET, SOCK_DGRAM
 
+
+def get_local_ip() -> str:
     with socket(AF_INET, SOCK_DGRAM) as s:
         try:
             s.connect(("8.8.8.8", 80))
