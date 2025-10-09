@@ -39,7 +39,7 @@ An **undirected graph** represents pairwise connections between objects without 
 #### **Define and Visualize the Graph**
 
 ```python
-# On the server (graph coordinator) machine
+# On the master (graph coordinator) machine
 from topolink import Graph
 
 nodes = ["1", "2", "3", "4", "5"]
@@ -67,14 +67,14 @@ To deploy an undirected graph network using `topolink`, follow these steps:
 1. **Define Nodes and Edges**  
    Specify the nodes and their connections as shown in the usage example above.
 
-2. **Initialize the Graph on the Server**  
-   On the server machine, create the `Graph` object and start the server with `deploy()`.
+2. **Initialize the Graph on the Master Machine**  
+   On the master machine, create the `Graph` object and start the graph with `deploy()`.
 
 3. **Join the Network from Each Node**  
-   On each participating machine or process, create a `NodeHandle` object with the node's name and the server address.
+   On each participating machine or process, create a `NodeHandle` object with the node's name.
 
 > **Note:**  
-> The graph server only assists in setting up the network according to the mathematical topology definition.
+> The graph process only assists in setting up the network according to the mathematical topology definition.
 It does **not** participate in subsequent communication between nodes.
 
 The `NodeHandle` class primarily provides each node (machine or process) with an interface for communication with other nodes.
@@ -103,19 +103,19 @@ $$
 
 where $\alpha > 0$ is the step size parameter. In each iteration, nodes only exchange information with their neighbors. Eventually, all $x_i$ converge to the same value (e.g., the initial average).
 
-#### **Server Side: Define and Launch the Graph**
+#### **Master Machine Side: Define and Launch the Graph**
 
 ```python
-# On the server (graph coordinator) machine
+# On the master (graph coordinator) machine
 from topolink import Graph
 
 nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 # Create the graph object
-ring = Graph(nodes, edges, address="<graph-server-ip>:5555")
+ring = Graph(nodes, edges)
 
-# Start the graph server to coordinate node joining
+# Start the graph to coordinate node joining
 ring.deploy()
 ```
 
@@ -126,10 +126,9 @@ ring.deploy()
 from topolink import NodeHandle
 
 node_name = "1"  # Change this for each node (e.g., "2", "3", ...)
-server_address = "<graph-server-ip>:5555"
 
-# Connect to the graph server and join the network
-nh = NodeHandle.create(node_name, server_address)
+# Join the network
+nh = NodeHandle.create(node_name)
 
 # Achieve state convergence across all nodes through neighbor communication
 import numpy as np
