@@ -1,6 +1,9 @@
+from logging import getLogger
+
+logger = getLogger("topolink.graph")
+
 import networkx as nx
 from json import dumps
-from logging import getLogger
 from typing import Any
 from zmq import Context, SyncSocket, ROUTER
 from matplotlib.axes import Axes
@@ -10,7 +13,7 @@ from numpy.typing import NDArray
 from .exceptions import ConnectivityError
 from .types import NodeInput, EdgeInput, NodeView, EdgeView, AdjView, NeighborInfo
 from .utils import get_local_ip
-from .discovery import RegistryAdvertiser
+from .discovery import GraphAdvertiser
 
 
 class Graph:
@@ -24,7 +27,7 @@ class Graph:
     edges : EdgeInput | None, optional
         An iterable of edges (tuples of node names) to initialize the graph. If None, the graph starts with no edges.
     name : str, optional
-        The name of the registry service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
+        The name of the graph service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
     *args : Any
         Additional positional arguments (not used).
     **kwargs : Any
@@ -60,7 +63,7 @@ class Graph:
 
     Notes
     -----
-    - Uses ZeroMQ for communication between nodes and a central registry.
+    - Uses ZeroMQ for communication between nodes.
     - The graph must be connected before deployment.
     - The `nx_graph` keyword argument is intended for internal use only and should not be set from outside this package.
     - The `from_mixing_matrix` method provides a convenient way to create a graph from a mixing matrix, ensuring the matrix is symmetric and double-stochastic.
@@ -76,8 +79,6 @@ class Graph:
     ) -> None:
         super().__init__()
 
-        self._logger = getLogger("topolink.Graph")
-
         # If a NetworkX graph is provided, use it directly.
         # Note: The `nx_graph` attribute is intended for internal use only and should not be set from outside this package.
         # It is primarily used by alternative constructors (such as from_mixing_matrix) to initialize the graph structure efficiently.
@@ -89,13 +90,12 @@ class Graph:
             self._nx_graph.add_edges_from(edges or [])
 
         self._context = Context()
-        self._registry_advertiser = RegistryAdvertiser(name)
+        self._graph_advertiser = GraphAdvertiser(name)
 
         self._host = get_local_ip()
         self._router, self._port = self._setup_router()
 
-        self._registry_advertiser.register(self._host, self._port)
-        self._logger.info(f"Registering service with name {name}")
+        self._graph_advertiser.register(self._host, self._port)
 
         self._registered_addresses: dict[str, str] = {}
 
@@ -193,7 +193,7 @@ class Graph:
 
     def _get_neighbor_info_list(self, node: str) -> list[NeighborInfo]:
         assert node in self.nodes, f"Node {node} is not in the graph."
-        
+
         neighbor_info_list = []
         adjacency = self.adjacency(node)
         for neighbor in adjacency:
@@ -227,12 +227,12 @@ class Graph:
         finally:
             self._router.close()
             self._context.term()
-            self._registry_advertiser.unregister()
+            self._graph_advertiser.unregister()
 
     def _setup_router(self) -> tuple[SyncSocket, int]:
         router = self._context.socket(ROUTER)
         port = router.bind_to_random_port("tcp://*")
-        self._logger.info(f"Registry running on {self._host}:{port}")
+        logger.info(f"Graph running on {self._host}:{port}")
 
         return router, port
 
@@ -242,15 +242,15 @@ class Graph:
             name = name_bytes.decode()
 
             if name not in self.nodes:
-                self._logger.info(f"Unknown node {name} tried to register")
-                self._router.send_multipart([name_bytes, b"", b"Error: Unknown node"])
+                logger.info(f"Undefined node {name} tried to register")
+                self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
                 continue
 
             address = address_bytes.decode()
             self._registered_addresses[name] = address
-            self._logger.info(f"Node {name} registered with address {address}")
+            logger.info(f"Node {name} registered with address {address}")
 
-        self._logger.info("All nodes registered. Registry is now ready.")
+        logger.info("All nodes registered. Graph is now ready.")
 
     def _notify_nodes_their_neighbors(self) -> None:
         for i in self.nodes:
@@ -259,7 +259,7 @@ class Graph:
 
             self._router.send_multipart([i.encode(), b"", *messages])
 
-        self._logger.info("Sent neighbor information to all nodes.")
+        logger.info("Sent neighbor information to all nodes.")
 
     def _unregister_nodes(self) -> None:
         nodes_unregistered: list[str] = []
@@ -268,16 +268,16 @@ class Graph:
             name = name_bytes.decode()
 
             if name not in self.nodes:
-                self._router.send_multipart([name_bytes, b"", b"Error: Unknown node"])
-                self._logger.info(f"Unknown node {name}. Cannot unregister.")
+                self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
+                logger.info(f"Undefined node {name}. Cannot unregister.")
                 continue
 
             if message == b"unregister":
                 nodes_unregistered.append(name)
                 self._router.send_multipart([name.encode(), b"", b"OK"])
-                self._logger.info(f"Node {name} has unregistered.")
+                logger.info(f"Node {name} has unregistered.")
             else:
-                self._router.send_multipart(
-                    [name_bytes, b"", b"Error: Unknown message"]
+                logger.warning(
+                    f"Received invalid unregister message from node {name}."
+                    f" Message content: {message.decode()}"
                 )
-                self._logger.info(f"Received message from {name}: {message.decode()}")

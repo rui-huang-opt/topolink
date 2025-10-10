@@ -1,10 +1,16 @@
+from logging import getLogger
+
+logger = getLogger("topolink.discovery")
+
 import socket
+import threading
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
+from .exceptions import GraphDiscoveryError
 
 SERVICE_TYPE = "_topolink._tcp.local."
 
 
-class RegistryAdvertiser:
+class GraphAdvertiser:
     def __init__(self, name: str):
         self._name = name
         self._zeroconf = Zeroconf()
@@ -17,23 +23,27 @@ class RegistryAdvertiser:
             addresses=[socket.inet_aton(ip_addr)],
             port=port,
             properties={
-                "role": "registry",
+                "role": "graph",
                 "version": "0.1.0",
-                "description": "Topolink Registry Service",
+                "description": "Topolink Graph Service",
             },
             server=socket.gethostname() + ".local.",
         )
         self._zeroconf.register_service(self._service_info)
+        logger.info(f"Registered graph service with name {self._name}")
 
     def unregister(self):
         if self._service_info:
             self._zeroconf.unregister_service(self._service_info)
         self._zeroconf.close()
+        logger.info(f"Unregistered graph service with name {self._name}")
 
 
-class RegistryListener(ServiceListener):
-    def __init__(self):
+class GraphListener(ServiceListener):
+    def __init__(self, service_found: threading.Event):
         self.services = {}
+        self.service_found = service_found
+        self.service_found.clear()
 
     def add_service(self, zeroconf_: Zeroconf, service_type: str, name: str) -> None:
         info = zeroconf_.get_service_info(service_type, name)
@@ -46,26 +56,41 @@ class RegistryListener(ServiceListener):
                 if v is not None
             }
             self.services[name] = (ip_address, port, properties)
+            self.service_found.set()
+            logger.info(
+                f"Graph service {name} added, service info: {self.services[name]}"
+            )
 
     def remove_service(self, zeroconf_: Zeroconf, service_type: str, name: str) -> None:
         if name in self.services:
             del self.services[name]
-            print(f"Service {name} removed")
+            logger.info(f"Graph service {name} removed")
 
 
-def get_registry_info(name: str) -> tuple[str, int]:
+def get_graph_info(name: str) -> tuple[str, int]:
     service_name = name + "." + SERVICE_TYPE
     zeroconf_ = Zeroconf()
+    service_found = threading.Event()
+
     try:
-        listener = RegistryListener()
+        listener = GraphListener(service_found)
         browser = ServiceBrowser(zeroconf_, SERVICE_TYPE, listener)
 
-        while service_name not in listener.services:
-            pass
+        if not service_found.wait(timeout=5):
+            err_msg = f"Timeout: Graph service '{service_name}' not found."
+            logger.error(err_msg)
+            raise GraphDiscoveryError(err_msg)
 
-        registry_ip_addr: str = listener.services[service_name][0]
-        registry_port: int = listener.services[service_name][1]
+        service_found.clear()
 
-        return registry_ip_addr, registry_port
+        if service_name not in listener.services:
+            err_msg = f"Graph service '{service_name}' not found."
+            logger.error(err_msg)
+            raise GraphDiscoveryError(err_msg)
+
+        graph_ip_addr: str = listener.services[service_name][0]
+        graph_port: int = listener.services[service_name][1]
+
+        return graph_ip_addr, graph_port
     finally:
         zeroconf_.close()

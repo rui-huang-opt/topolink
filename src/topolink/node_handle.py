@@ -1,13 +1,17 @@
 from logging import getLogger
+
+logger = getLogger(f"topolink.node_handle")
+
 from json import loads
 from typing import KeysView
-from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
+from zmq import REQ, ROUTER, DEALER, SNDTIMEO, RCVTIMEO, IDENTITY
+from zmq import Context, Again, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
-from .exceptions import UnknownNodeError, UnknownReplyError
+from .exceptions import UndefinedNodeError, GraphJoinError
 from .types import NeighborInfo
 from .utils import get_local_ip
-from .discovery import get_registry_info
+from .discovery import get_graph_info
 
 
 class NodeHandle:
@@ -15,7 +19,7 @@ class NodeHandle:
     NodeHandle manages communication and state exchange between a node and its neighbors in a distributed network.
 
     This class handles:
-    - Registration with a central registry to obtain neighbor information.
+    - Registration with a graph service to obtain neighbor information.
     - Establishing ZeroMQ sockets for communication with neighbors.
     - Sending and receiving state information to/from neighbors.
     - Performing operations like broadcasting, gathering, computing Laplacians, and weighted mixing.
@@ -61,15 +65,16 @@ class NodeHandle:
     def __init__(self, name: str, graph_name: str = "default") -> None:
         self._name = name
 
-        self._registry_ip_addr, self._registry_port = get_registry_info(graph_name)
+        self._graph_ip_addr, self._graph_port = get_graph_info(graph_name)
+        self._graph_name = graph_name
 
-        self._logger = getLogger(f"topolink.NodeHandle")
         self._local_ip = get_local_ip()
 
         self._context = Context()
         self._req = self._context.socket(REQ)
+        self._req.setsockopt(SNDTIMEO, 5000)
+        self._req.setsockopt(RCVTIMEO, 5000)
         self._req.setsockopt(IDENTITY, self._name.encode())
-        self._registered = False
 
         self._router = self._context.socket(ROUTER)
         self._port = self._router.bind_to_random_port("tcp://*")
@@ -98,12 +103,19 @@ class NodeHandle:
         return self._neighbor_addresses.keys()
 
     def _register(self) -> None:
-        self._req.connect(f"tcp://{self._registry_ip_addr}:{self._registry_port}")
-        self._req.send(self._local_ip.encode() + b":" + str(self._port).encode())
-        reply = self._req.recv_multipart()
+        try:
+            self._req.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
+            self._req.send(self._local_ip.encode() + b":" + str(self._port).encode())
+            reply = self._req.recv_multipart()
+        except Again:
+            err_msg = "Timeout: Unable to Join the graph."
+            logger.error(err_msg)
+            raise GraphJoinError(err_msg)
 
-        if reply[0] == b"Error: Unknown node":
-            raise UnknownNodeError("Unknown node. Please check the node name.")
+        if reply[0] == b"Error: Undefined node":
+            err_msg = f"Undefined node {self._name}. Failed to register."
+            logger.error(err_msg)
+            raise UndefinedNodeError(err_msg)
 
         for part in reply:
             neighbor_info: NeighborInfo = loads(part.decode())
@@ -112,23 +124,14 @@ class NodeHandle:
             self._neighbor_weights[name] = neighbor_info["weight"]
 
         self._weight = 1.0 - sum(self._neighbor_weights.values())
-        self._registered = True
-        registry_address = f"{self._registry_ip_addr}:{self._registry_port}"
-        self._logger.info(f"Registered node {self._name} at {registry_address}")
-        self._logger.info(f"Neighbor addresses: {self._neighbor_addresses}")
-        self._logger.info(f"Node address: {self._local_ip}:{self._port}")
+        logger.info(f"Node {self._name} joined graph {self._graph_name}.")
 
     def _unregister(self) -> None:
-        if not self._registered:
-            return
-
         self._req.send(b"unregister")
         reply = self._req.recv()
 
         if reply == b"OK":
-            self._logger.info(f"Node {self._name} unregistered from server.")
-        else:
-            raise UnknownReplyError("Received unknown reply from registry.")
+            logger.info(f"Node {self._name} left graph {self._graph_name}.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbor_addresses.items():
@@ -147,7 +150,7 @@ class NodeHandle:
             if neighbor_name in self._neighbor_addresses:
                 connected.add(neighbor_name)
 
-        self._logger.info("Connected to all neighbors.")
+        logger.info("Connected to all neighbors.")
 
     def send_to_all(self, data_to_send: dict[str, NDArray[float64]]) -> None:
         """

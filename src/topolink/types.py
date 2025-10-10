@@ -1,3 +1,5 @@
+"""Type definitions for TopoLink."""
+
 from typing import Iterable, Collection, Mapping
 
 NodeInput = Iterable[str]

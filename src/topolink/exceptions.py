@@ -1,16 +1,25 @@
-class UnknownNodeError(Exception):
+"""Custom exceptions for TopoLink."""
+
+
+class UndefinedNodeError(Exception):
     """Exception raised when a node is not defined in the graph."""
-
-    pass
-
-
-class UnknownReplyError(Exception):
-    """Exception raised when an unknown reply is received from the registry."""
 
     pass
 
 
 class ConnectivityError(Exception):
     """Exception raised when the graph is not fully connected."""
+
+    pass
+
+
+class GraphDiscoveryError(Exception):
+    """Exception raised when the graph service cannot be discovered."""
+
+    pass
+
+
+class GraphJoinError(Exception):
+    """Exception raised when a node fails to join the graph."""
 
     pass

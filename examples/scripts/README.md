@@ -10,3 +10,5 @@ python server.py
 python node.py <n>
 ```
 where `<n>` can be any value from 1 to 5.
+
+> **Note:** The server and node scripts must be run on machines within the same local area network (LAN) to ensure they can communicate with each other.
