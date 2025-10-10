@@ -127,11 +127,17 @@ class NodeHandle:
         logger.info(f"Node {self._name} joined graph {self._graph_name}.")
 
     def _unregister(self) -> None:
-        self._req.send(b"unregister")
-        reply = self._req.recv()
+        try:
+            self._req.send(b"unregister")
+            reply = self._req.recv()
+        except Again:
+            logger.warning("Timeout: Unable to unregister from the graph.")
+            return
 
         if reply == b"OK":
             logger.info(f"Node {self._name} left graph {self._graph_name}.")
+        else:
+            logger.warning(f"Failed to unregister node {self._name} from the graph.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbor_addresses.items():
