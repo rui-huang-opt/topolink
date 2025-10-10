@@ -69,6 +69,7 @@ class NodeHandle:
         self._context = Context()
         self._req = self._context.socket(REQ)
         self._req.setsockopt(IDENTITY, self._name.encode())
+        self._registered = False
 
         self._router = self._context.socket(ROUTER)
         self._port = self._router.bind_to_random_port("tcp://*")
@@ -111,19 +112,20 @@ class NodeHandle:
             self._neighbor_weights[name] = neighbor_info["weight"]
 
         self._weight = 1.0 - sum(self._neighbor_weights.values())
-
+        self._registered = True
         registry_address = f"{self._registry_ip_addr}:{self._registry_port}"
         self._logger.info(f"Registered node {self._name} at {registry_address}")
         self._logger.info(f"Neighbor addresses: {self._neighbor_addresses}")
         self._logger.info(f"Node address: {self._local_ip}:{self._port}")
 
     def _unregister(self) -> None:
+        if not self._registered:
+            return
+
         self._req.send(b"unregister")
         reply = self._req.recv()
 
-        if reply == b"Error: Unknown node":
-            self._logger.error("Node was not registered.")
-        elif reply == b"OK":
+        if reply == b"OK":
             self._logger.info(f"Node {self._name} unregistered from server.")
         else:
             raise UnknownReplyError("Received unknown reply from registry.")
