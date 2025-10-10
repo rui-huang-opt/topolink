@@ -4,6 +4,7 @@ from typing import KeysView
 from zmq import Context, REQ, ROUTER, DEALER, IDENTITY, SyncSocket
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
+from .exceptions import UnknownNodeError, UnknownReplyError
 from .types import NeighborInfo
 from .utils import get_local_ip
 from .discovery import get_registry_info
@@ -101,7 +102,7 @@ class NodeHandle:
         reply = self._req.recv_multipart()
 
         if reply[0] == b"Error: Unknown node":
-            raise ValueError("Unknown node. Please check the node name.")
+            raise UnknownNodeError("Unknown node. Please check the node name.")
 
         for part in reply:
             neighbor_info: NeighborInfo = loads(part.decode())
@@ -125,7 +126,7 @@ class NodeHandle:
         elif reply == b"OK":
             self._logger.info(f"Node {self._name} unregistered from server.")
         else:
-            raise ValueError("Received unknown reply from server.")
+            raise UnknownReplyError("Received unknown reply from registry.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbor_addresses.items():

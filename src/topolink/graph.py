@@ -7,6 +7,7 @@ from matplotlib.axes import Axes
 from numpy import float64, allclose, ones
 from numpy import sum as np_sum
 from numpy.typing import NDArray
+from .exceptions import ConnectivityError
 from .types import NodeInput, EdgeInput, NodeView, EdgeView, AdjView, NeighborInfo
 from .utils import get_local_ip
 from .discovery import RegistryAdvertiser
@@ -191,16 +192,14 @@ class Graph:
         return self._nx_graph[node]
 
     def _get_neighbor_info_list(self, node: str) -> list[NeighborInfo]:
-        if node not in self.nodes:
-            raise ValueError(f"Node {node} is not part of the graph.")
-
+        assert node in self.nodes, f"Node {node} is not in the graph."
+        
         neighbor_info_list = []
         adjacency = self.adjacency(node)
         for neighbor in adjacency:
             address = self._registered_addresses.get(neighbor, "")
 
-            if not address:
-                raise ValueError(f"Node {neighbor} is not registered.")
+            assert address, f"Neighbor {neighbor} has not registered."
 
             weight = adjacency[neighbor].get("weight", 1.0)
             n_info = NeighborInfo(name=neighbor, address=address, weight=weight)
@@ -215,11 +214,11 @@ class Graph:
         Cleans up resources by closing the router and terminating the context after deployment.
 
         Raises:
-            ValueError: If the topology is not connected.
+            ConnectivityError: If the graph is not fully connected.
         """
         try:
             if not self.is_connected:
-                raise ValueError("The provided topology must be connected.")
+                raise ConnectivityError("The graph is not fully connected.")
 
             self._register_nodes()
             self._notify_nodes_their_neighbors()
@@ -278,5 +277,7 @@ class Graph:
                 self._router.send_multipart([name.encode(), b"", b"OK"])
                 self._logger.info(f"Node {name} has unregistered.")
             else:
-                self._router.send_multipart([name_bytes, b"", b"Error: Unknown message"])
+                self._router.send_multipart(
+                    [name_bytes, b"", b"Error: Unknown message"]
+                )
                 self._logger.info(f"Received message from {name}: {message.decode()}")
