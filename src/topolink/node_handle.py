@@ -119,10 +119,13 @@ class NodeHandle:
     def _unregister(self) -> None:
         self._req.send(b"unregister")
         reply = self._req.recv()
-        if reply != b"OK":
-            raise RuntimeError("Failed to unregister node.")
 
-        self._logger.info(f"Node {self._name} unregistered from server.")
+        if reply == b"Error: Unknown node":
+            self._logger.error("Node was not registered.")
+        elif reply == b"OK":
+            self._logger.info(f"Node {self._name} unregistered from server.")
+        else:
+            raise ValueError("Received unknown reply from server.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor_name, address in self._neighbor_addresses.items():

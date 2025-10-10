@@ -269,6 +269,7 @@ class Graph:
             name = name_bytes.decode()
 
             if name not in self.nodes:
+                self._router.send_multipart([name_bytes, b"", b"Error: Unknown node"])
                 self._logger.info(f"Unknown node {name}. Cannot unregister.")
                 continue
 
@@ -277,4 +278,5 @@ class Graph:
                 self._router.send_multipart([name.encode(), b"", b"OK"])
                 self._logger.info(f"Node {name} has unregistered.")
             else:
+                self._router.send_multipart([name_bytes, b"", b"Error: Unknown message"])
                 self._logger.info(f"Received message from {name}: {message.decode()}")
