@@ -190,14 +190,16 @@ class Graph:
         return self._nx_graph[node]
 
     def _get_neighbor_info_list(self, node: str) -> list[NeighborInfo]:
-        assert node in self.nodes, f"Node {node} is not defined in the graph."
+        # When the assert fails, it indicates a bug in the deployment logic.
+        assert node in self.nodes, f"Node '{node}' is not defined in the graph."
 
         neighbor_info_list = []
         adjacency = self.adjacency(node)
         for neighbor in adjacency:
             endpoint = self._registered_nodes.get(neighbor, "")
 
-            assert endpoint, f"Node {neighbor} has not registered."
+            # When the assert fails, it indicates a bug in the deployment logic.
+            assert endpoint, f"Node '{neighbor}' has not registered."
 
             weight = adjacency[neighbor].get("weight", 1.0)
             n_info = NeighborInfo(name=neighbor, endpoint=endpoint, weight=weight)
@@ -218,9 +220,6 @@ class Graph:
             name = name_bytes.decode()
 
             if name not in self.nodes:
-                logger.error(
-                    f"Undefined node '{name}' tried to join graph '{self._name}'."
-                )
                 self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
                 continue
 

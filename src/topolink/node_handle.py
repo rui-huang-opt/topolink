@@ -112,7 +112,7 @@ class NodeHandle:
             raise NodeJoinTimeoutError(err_msg)
 
         if reply[0] == b"Error: Undefined node":
-            err_msg = f"Undefined node '{self._name}' in graph '{self._graph_name}'."
+            err_msg = f"Undefined node '{self._name}' tried to join graph '{self._graph_name}'."
             logger.error(err_msg)
             raise NodeUndefinedError(err_msg)
 
