@@ -14,7 +14,7 @@ from typing import TypedDict
 
 class NeighborInfo(TypedDict):
     name: str
-    address: str
+    endpoint: str
     weight: float
 
 
@@ -25,7 +25,7 @@ from zmq import SyncSocket
 class Neighbor(NamedTuple):
     name: str
     weight: float
-    address: str
+    endpoint: str
     in_socket: SyncSocket
 
     def __eq__(self, name: str) -> bool:

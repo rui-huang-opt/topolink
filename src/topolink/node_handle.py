@@ -7,10 +7,10 @@ from zmq import REQ, ROUTER, DEALER, SNDTIMEO, RCVTIMEO, IDENTITY
 from zmq import Context, Again
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
-from .exceptions import UndefinedNodeError, GraphJoinError
+from .exceptions import NodeUndefinedError, NodeJoinTimeoutError, NodeDiscoveryError
 from .types import NeighborInfo, Neighbor
 from .utils import get_local_ip
-from .discovery import get_graph_info
+from .discovery import discover_graph_endpoint
 
 
 class NodeHandle:
@@ -62,9 +62,15 @@ class NodeHandle:
     """
 
     def __init__(self, name: str, graph_name: str = "default") -> None:
-        self._name = name
+        endpoint = discover_graph_endpoint(graph_name)
 
-        self._graph_ip_addr, self._graph_port = get_graph_info(graph_name)
+        if endpoint is None:
+            err_msg = f"Timeout: Node '{name}' can't discover graph '{graph_name}'."
+            logger.error(err_msg)
+            raise NodeDiscoveryError(err_msg)
+
+        self._name = name
+        self._graph_ip_addr, self._graph_port = endpoint
         self._graph_name = graph_name
 
         self._context = Context()
@@ -103,12 +109,12 @@ class NodeHandle:
         except Again:
             err_msg = "Timeout: Unable to Join the graph."
             logger.error(err_msg)
-            raise GraphJoinError(err_msg)
+            raise NodeJoinTimeoutError(err_msg)
 
         if reply[0] == b"Error: Undefined node":
             err_msg = f"Undefined node {self._name}. Failed to register."
             logger.error(err_msg)
-            raise UndefinedNodeError(err_msg)
+            raise NodeUndefinedError(err_msg)
 
         for part in reply:
             neighbor_info: NeighborInfo = loads(part.decode())
@@ -121,7 +127,7 @@ class NodeHandle:
     def _connect_to_neighbors(self) -> None:
         for neighbor in self._neighbors:
             neighbor.in_socket.setsockopt(IDENTITY, self._name.encode())
-            neighbor.in_socket.connect(f"tcp://{neighbor.address}")
+            neighbor.in_socket.connect(f"tcp://{neighbor.endpoint}")
 
         for neighbor in self._neighbors:
             neighbor.in_socket.send(b"")

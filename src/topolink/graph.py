@@ -195,12 +195,12 @@ class Graph:
         neighbor_info_list = []
         adjacency = self.adjacency(node)
         for neighbor in adjacency:
-            address = self._registered_nodes.get(neighbor, "")
+            endpoint = self._registered_nodes.get(neighbor, "")
 
-            assert address, f"Node {neighbor} has not registered."
+            assert endpoint, f"Node {neighbor} has not registered."
 
             weight = adjacency[neighbor].get("weight", 1.0)
-            n_info = NeighborInfo(name=neighbor, address=address, weight=weight)
+            n_info = NeighborInfo(name=neighbor, endpoint=endpoint, weight=weight)
             neighbor_info_list.append(n_info)
 
         return neighbor_info_list
@@ -214,7 +214,7 @@ class Graph:
 
     def _register_nodes(self) -> None:
         while len(self._registered_nodes) < self.number_of_nodes:
-            name_bytes, _, address_bytes = self._router.recv_multipart()
+            name_bytes, _, endpoint_bytes = self._router.recv_multipart()
             name = name_bytes.decode()
 
             if name not in self.nodes:
@@ -224,9 +224,9 @@ class Graph:
                 self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
                 continue
 
-            address = address_bytes.decode()
-            self._registered_nodes[name] = address
-            logger.info(f"Node {name} joined graph '{self._name}' from {address}.")
+            endpoint = endpoint_bytes.decode()
+            self._registered_nodes[name] = endpoint
+            logger.info(f"Node {name} joined graph '{self._name}' from {endpoint}.")
 
         logger.info(f"Graph '{self._name}' registration complete.")
 

@@ -5,7 +5,6 @@ logger = getLogger("topolink.discovery")
 import socket
 import threading
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
-from .exceptions import GraphDiscoveryError
 
 SERVICE_TYPE = "_topolink._tcp.local."
 
@@ -67,18 +66,16 @@ class GraphListener(ServiceListener):
             logger.info(f"Graph service {name} removed")
 
 
-def get_graph_info(name: str) -> tuple[str, int]:
-    service_name = name + "." + SERVICE_TYPE
+def discover_graph_endpoint(graph_name: str) -> tuple[str, int] | None:
+    service_name = graph_name + "." + SERVICE_TYPE
     zeroconf_ = Zeroconf()
 
     try:
-        listener = GraphListener(name)
+        listener = GraphListener(graph_name)
         browser = ServiceBrowser(zeroconf_, SERVICE_TYPE, listener)
 
         if not listener.service_found.wait(timeout=5):
-            err_msg = f"Timeout: Graph service '{service_name}' not found."
-            logger.error(err_msg)
-            raise GraphDiscoveryError(err_msg)
+            return None
 
         graph_ip_addr: str = listener.services[service_name][0]
         graph_port: int = listener.services[service_name][1]
