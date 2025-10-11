@@ -223,7 +223,6 @@ class Graph:
             self._register_nodes()
             self._notify_nodes_their_neighbors()
             # TODO: More deployment logic can be added here if needed.
-            self._unregister_nodes()
         finally:
             self._router.close()
             self._context.term()
@@ -260,24 +259,3 @@ class Graph:
             self._router.send_multipart([i.encode(), b"", *messages])
 
         logger.info("Sent neighbor information to all nodes.")
-
-    def _unregister_nodes(self) -> None:
-        nodes_unregistered: list[str] = []
-        while len(nodes_unregistered) < self.number_of_nodes:
-            name_bytes, _, message = self._router.recv_multipart()
-            name = name_bytes.decode()
-
-            if name not in self.nodes:
-                self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
-                logger.info(f"Undefined node {name}. Cannot unregister.")
-                continue
-
-            if message == b"unregister":
-                nodes_unregistered.append(name)
-                self._router.send_multipart([name.encode(), b"", b"OK"])
-                logger.info(f"Node {name} has unregistered.")
-            else:
-                logger.warning(
-                    f"Received invalid unregister message from node {name}."
-                    f" Message content: {message.decode()}"
-                )
