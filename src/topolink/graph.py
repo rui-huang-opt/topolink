@@ -226,7 +226,7 @@ class Graph:
 
             endpoint = endpoint_bytes.decode()
             self._registered_nodes[name] = endpoint
-            logger.info(f"Node {name} joined graph '{self._name}' from {endpoint}.")
+            logger.info(f"Node '{name}' joined graph '{self._name}' from {endpoint}.")
 
         logger.info(f"Graph '{self._name}' registration complete.")
 

@@ -107,12 +107,12 @@ class NodeHandle:
             self._req.send(self._ip_address.encode() + b":" + str(self._port).encode())
             reply = self._req.recv_multipart()
         except Again:
-            err_msg = "Timeout: Unable to Join the graph."
+            err_msg = f"Timeout: Node '{self._name}' can't join the graph."
             logger.error(err_msg)
             raise NodeJoinTimeoutError(err_msg)
 
         if reply[0] == b"Error: Undefined node":
-            err_msg = f"Undefined node {self._name}. Failed to register."
+            err_msg = f"Undefined node '{self._name}' in graph '{self._graph_name}'."
             logger.error(err_msg)
             raise NodeUndefinedError(err_msg)
 
@@ -122,7 +122,7 @@ class NodeHandle:
             self._neighbors.append(Neighbor(in_socket=in_socket, **neighbor_info))
 
         self._weight = 1.0 - sum(neighbor.weight for neighbor in self._neighbors)
-        logger.info(f"Node {self._name} joined graph {self._graph_name}.")
+        logger.info(f"Node '{self._name}' joined graph '{self._graph_name}'.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor in self._neighbors:
@@ -139,7 +139,7 @@ class NodeHandle:
             if received_name in self._neighbors:
                 connected.add(received_name)
 
-        logger.info("Connected to all neighbors.")
+        logger.info(f"Node '{self._name}' connected to all neighbors.")
 
     def send_to_all(self, data_by_neighbor: dict[str, NDArray[float64]]) -> None:
         """
