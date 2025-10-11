@@ -40,10 +40,10 @@ class GraphAdvertiser:
 
 
 class GraphListener(ServiceListener):
-    def __init__(self, service_found: threading.Event):
+    def __init__(self, name):
         self.services = {}
-        self.service_found = service_found
-        self.service_found.clear()
+        self._name = name
+        self.service_found = threading.Event()
 
     def add_service(self, zeroconf_: Zeroconf, service_type: str, name: str) -> None:
         info = zeroconf_.get_service_info(service_type, name)
@@ -56,35 +56,27 @@ class GraphListener(ServiceListener):
                 if v is not None
             }
             self.services[name] = (ip_address, port, properties)
-            self.service_found.set()
-            logger.info(
-                f"Graph service {name} added, service info: {self.services[name]}"
-            )
+            if name == self._name + "." + SERVICE_TYPE:
+                self.service_found.set()
+                logger.info(f"Graph service {name} added")
 
     def remove_service(self, zeroconf_: Zeroconf, service_type: str, name: str) -> None:
         if name in self.services:
             del self.services[name]
+            self.service_found.clear()
             logger.info(f"Graph service {name} removed")
 
 
 def get_graph_info(name: str) -> tuple[str, int]:
     service_name = name + "." + SERVICE_TYPE
     zeroconf_ = Zeroconf()
-    service_found = threading.Event()
 
     try:
-        listener = GraphListener(service_found)
+        listener = GraphListener(name)
         browser = ServiceBrowser(zeroconf_, SERVICE_TYPE, listener)
 
-        if not service_found.wait(timeout=5):
+        if not listener.service_found.wait(timeout=5):
             err_msg = f"Timeout: Graph service '{service_name}' not found."
-            logger.error(err_msg)
-            raise GraphDiscoveryError(err_msg)
-
-        service_found.clear()
-
-        if service_name not in listener.services:
-            err_msg = f"Graph service '{service_name}' not found."
             logger.error(err_msg)
             raise GraphDiscoveryError(err_msg)
 
@@ -93,4 +85,5 @@ def get_graph_info(name: str) -> tuple[str, int]:
 
         return graph_ip_addr, graph_port
     finally:
+        browser.cancel()
         zeroconf_.close()
