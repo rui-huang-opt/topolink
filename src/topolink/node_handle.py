@@ -3,13 +3,12 @@ from logging import getLogger
 logger = getLogger(f"topolink.node_handle")
 
 from json import loads
-from typing import KeysView
 from zmq import REQ, ROUTER, DEALER, SNDTIMEO, RCVTIMEO, IDENTITY
-from zmq import Context, Again, SyncSocket
+from zmq import Context, Again
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
 from .exceptions import UndefinedNodeError, GraphJoinError
-from .types import NeighborInfo
+from .types import NeighborInfo, Neighbor
 from .utils import get_local_ip
 from .discovery import get_graph_info
 
@@ -68,23 +67,20 @@ class NodeHandle:
         self._graph_ip_addr, self._graph_port = get_graph_info(graph_name)
         self._graph_name = graph_name
 
-        self._local_ip = get_local_ip()
-
         self._context = Context()
         self._req = self._context.socket(REQ)
         self._req.setsockopt(SNDTIMEO, 5000)
         self._req.setsockopt(RCVTIMEO, 5000)
         self._req.setsockopt(IDENTITY, self._name.encode())
 
-        self._router = self._context.socket(ROUTER)
-        self._port = self._router.bind_to_random_port("tcp://*")
-
         self._weight = 1.0
-        self._neighbor_addresses: dict[str, str] = {}
-        self._neighbor_weights: dict[str, float] = {}
-        self._dealers: dict[str, SyncSocket] = {}
+        self._out_socket = self._context.socket(ROUTER)
+        self._ip_address = get_local_ip()
+        self._port = self._out_socket.bind_to_random_port("tcp://*")
 
-        self._register()
+        self._neighbors: list[Neighbor] = []
+
+        self._register_to_graph()
         self._connect_to_neighbors()
 
     @property
@@ -93,16 +89,16 @@ class NodeHandle:
 
     @property
     def num_neighbors(self) -> int:
-        return len(self._neighbor_addresses)
+        return len(self._neighbors)
 
     @property
-    def neighbor_names(self) -> KeysView[str]:
-        return self._neighbor_addresses.keys()
+    def neighbor_names(self) -> list[str]:
+        return [neighbor.name for neighbor in self._neighbors]
 
-    def _register(self) -> None:
+    def _register_to_graph(self) -> None:
         try:
             self._req.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
-            self._req.send(self._local_ip.encode() + b":" + str(self._port).encode())
+            self._req.send(self._ip_address.encode() + b":" + str(self._port).encode())
             reply = self._req.recv_multipart()
         except Again:
             err_msg = "Timeout: Unable to Join the graph."
@@ -116,48 +112,44 @@ class NodeHandle:
 
         for part in reply:
             neighbor_info: NeighborInfo = loads(part.decode())
-            name = neighbor_info["name"]
-            self._neighbor_addresses[name] = neighbor_info["address"]
-            self._neighbor_weights[name] = neighbor_info["weight"]
+            in_socket = self._context.socket(DEALER)
+            self._neighbors.append(Neighbor(in_socket=in_socket, **neighbor_info))
 
-        self._weight = 1.0 - sum(self._neighbor_weights.values())
+        self._weight = 1.0 - sum(neighbor.weight for neighbor in self._neighbors)
         logger.info(f"Node {self._name} joined graph {self._graph_name}.")
 
     def _connect_to_neighbors(self) -> None:
-        for neighbor_name, address in self._neighbor_addresses.items():
-            dealer = self._context.socket(DEALER)
-            dealer.setsockopt(IDENTITY, self._name.encode())
-            dealer.connect(f"tcp://{address}")
-            self._dealers[neighbor_name] = dealer
+        for neighbor in self._neighbors:
+            neighbor.in_socket.setsockopt(IDENTITY, self._name.encode())
+            neighbor.in_socket.connect(f"tcp://{neighbor.address}")
 
-        for dealer in self._dealers.values():
-            dealer.send(b"")
+        for neighbor in self._neighbors:
+            neighbor.in_socket.send(b"")
 
         connected = set()
         while len(connected) < self.num_neighbors:
-            client_id, _ = self._router.recv_multipart()
-            neighbor_name = client_id.decode()
-            if neighbor_name in self._neighbor_addresses:
-                connected.add(neighbor_name)
+            client_id, _ = self._out_socket.recv_multipart()
+            received_name = client_id.decode()
+            if received_name in self._neighbors:
+                connected.add(received_name)
 
         logger.info("Connected to all neighbors.")
 
-    def send_to_all(self, data_to_send: dict[str, NDArray[float64]]) -> None:
+    def send_to_all(self, data_by_neighbor: dict[str, NDArray[float64]]) -> None:
         """
         Sends data to all specified neighbor nodes.
 
         Args:
-            data_to_send (dict[str, NDArray[float64]]): A dictionary mapping neighbor names to the data arrays to send.
+            data_by_neighbor (dict[str, NDArray[float64]]): A dictionary mapping neighbor names to the data arrays to send.
 
         Returns:
             None
         """
-        for neighbor, state in data_to_send.items():
-            if neighbor not in self._neighbor_addresses:
-                raise ValueError(f"Neighbor {neighbor} not found.")
+        for n_name, data in data_by_neighbor.items():
+            assert n_name in self.neighbor_names, f"Neighbor {n_name} not found."
 
-            state_bytes = state.tobytes()
-            self._router.send_multipart([neighbor.encode(), state_bytes])
+            data_bytes = data.tobytes()
+            self._out_socket.send_multipart([n_name.encode(), data_bytes])
 
     def broadcast(self, state: NDArray[float64]) -> None:
         """
@@ -170,8 +162,8 @@ class NodeHandle:
             None
         """
         state_bytes = state.tobytes()
-        for neighbor in self._neighbor_addresses:
-            self._router.send_multipart([neighbor.encode(), state_bytes])
+        for neighbor in self._neighbors:
+            self._out_socket.send_multipart([neighbor.name.encode(), state_bytes])
 
     def gather(self) -> dict[str, NDArray[float64]]:
         """
@@ -181,8 +173,8 @@ class NodeHandle:
             dict[str, NDArray[float64]]: A dictionary mapping neighbor names to their received data arrays.
         """
         return {
-            neighbor: frombuffer(dealer.recv(), dtype=float64)
-            for neighbor, dealer in self._dealers.items()
+            neighbor.name: frombuffer(neighbor.in_socket.recv(), dtype=float64)
+            for neighbor in self._neighbors
         }
 
     def weighted_gather(self) -> dict[str, NDArray[float64]]:
@@ -194,9 +186,9 @@ class NodeHandle:
             and multiplied by its associated weight.
         """
         return {
-            neighbor: frombuffer(dealer.recv(), dtype=float64)
-            * self._neighbor_weights[neighbor]
-            for neighbor, dealer in self._dealers.items()
+            neighbor.name: frombuffer(neighbor.in_socket.recv(), dtype=float64)
+            * neighbor.weight
+            for neighbor in self._neighbors
         }
 
     def laplacian(self, state: NDArray[float64]) -> NDArray[float64]:

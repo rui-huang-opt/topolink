@@ -13,6 +13,12 @@ class ConnectivityError(Exception):
     pass
 
 
+class InvalidWeightedMatrixError(Exception):
+    """Exception raised when the graph is defined with a non-symmetric or non-double-stochastic matrix."""
+
+    pass
+
+
 class GraphDiscoveryError(Exception):
     """Exception raised when the graph service cannot be discovered."""
 

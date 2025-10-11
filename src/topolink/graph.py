@@ -7,12 +7,11 @@ from json import dumps
 from typing import Any
 from zmq import Context, SyncSocket, ROUTER
 from matplotlib.axes import Axes
-from numpy import float64, allclose, ones
-from numpy import sum as np_sum
+from numpy import float64
 from numpy.typing import NDArray
-from .exceptions import ConnectivityError
+from .exceptions import ConnectivityError, InvalidWeightedMatrixError
 from .types import NodeInput, EdgeInput, NodeView, EdgeView, AdjView, NeighborInfo
-from .utils import get_local_ip
+from .utils import get_local_ip, is_symmetric_double_stochastic
 from .discovery import GraphAdvertiser
 
 
@@ -90,14 +89,15 @@ class Graph:
             self._nx_graph.add_edges_from(edges or [])
 
         self._context = Context()
+
+        self._name = name
+
         self._graph_advertiser = GraphAdvertiser(name)
-
-        self._host = get_local_ip()
+        self._ip_address = get_local_ip()
         self._router, self._port = self._setup_router()
+        self._graph_advertiser.register(self._ip_address, self._port)
 
-        self._graph_advertiser.register(self._host, self._port)
-
-        self._registered_addresses: dict[str, str] = {}
+        self._registered_nodes: dict[str, str] = {}
 
     @classmethod
     def from_mixing_matrix(
@@ -114,12 +114,10 @@ class Graph:
         nodes : list[str], optional
             A list of self defined node names. If not provided, nodes will be named sequentially as "1", "2", ..., "n".
         """
-        if not allclose(mixing_matrix, mixing_matrix.T):
-            raise ValueError("The mixing matrix must be symmetric.")
-
-        ones_vec = ones(mixing_matrix.shape[0])
-        if not allclose(np_sum(mixing_matrix, axis=1), ones_vec):
-            raise ValueError("The mixing matrix must be double-stochastic.")
+        if not is_symmetric_double_stochastic(mixing_matrix):
+            raise InvalidWeightedMatrixError(
+                "The mixing matrix must be symmetric and double-stochastic."
+            )
 
         nodelist = nodes or [f"{i + 1}" for i in range(mixing_matrix.shape[0])]
 
@@ -192,20 +190,54 @@ class Graph:
         return self._nx_graph[node]
 
     def _get_neighbor_info_list(self, node: str) -> list[NeighborInfo]:
-        assert node in self.nodes, f"Node {node} is not in the graph."
+        assert node in self.nodes, f"Node {node} is not defined in the graph."
 
         neighbor_info_list = []
         adjacency = self.adjacency(node)
         for neighbor in adjacency:
-            address = self._registered_addresses.get(neighbor, "")
+            address = self._registered_nodes.get(neighbor, "")
 
-            assert address, f"Neighbor {neighbor} has not registered."
+            assert address, f"Node {neighbor} has not registered."
 
             weight = adjacency[neighbor].get("weight", 1.0)
             n_info = NeighborInfo(name=neighbor, address=address, weight=weight)
             neighbor_info_list.append(n_info)
 
         return neighbor_info_list
+
+    def _setup_router(self) -> tuple[SyncSocket, int]:
+        router = self._context.socket(ROUTER)
+        port = router.bind_to_random_port("tcp://*")
+        logger.info(f"Graph '{self._name}' running on: {self._ip_address}:{port}")
+
+        return router, port
+
+    def _register_nodes(self) -> None:
+        while len(self._registered_nodes) < self.number_of_nodes:
+            name_bytes, _, address_bytes = self._router.recv_multipart()
+            name = name_bytes.decode()
+
+            if name not in self.nodes:
+                logger.error(
+                    f"Undefined node '{name}' tried to join graph '{self._name}'."
+                )
+                self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
+                continue
+
+            address = address_bytes.decode()
+            self._registered_nodes[name] = address
+            logger.info(f"Node {name} joined graph '{self._name}' from {address}.")
+
+        logger.info(f"Graph '{self._name}' registration complete.")
+
+    def _notify_nodes_of_neighbors(self) -> None:
+        for i in self.nodes:
+            neighbor_info_list = self._get_neighbor_info_list(i)
+            messages = [dumps(n_info).encode() for n_info in neighbor_info_list]
+
+            self._router.send_multipart([i.encode(), b"", *messages])
+
+        logger.info(f"Sent neighbor information to all nodes in graph '{self._name}'.")
 
     def deploy(self) -> None:
         """
@@ -221,41 +253,9 @@ class Graph:
                 raise ConnectivityError("The graph is not fully connected.")
 
             self._register_nodes()
-            self._notify_nodes_their_neighbors()
+            self._notify_nodes_of_neighbors()
             # TODO: More deployment logic can be added here if needed.
         finally:
             self._router.close()
             self._context.term()
             self._graph_advertiser.unregister()
-
-    def _setup_router(self) -> tuple[SyncSocket, int]:
-        router = self._context.socket(ROUTER)
-        port = router.bind_to_random_port("tcp://*")
-        logger.info(f"Graph running on {self._host}:{port}")
-
-        return router, port
-
-    def _register_nodes(self) -> None:
-        while len(self._registered_addresses) < self.number_of_nodes:
-            name_bytes, _, address_bytes = self._router.recv_multipart()
-            name = name_bytes.decode()
-
-            if name not in self.nodes:
-                logger.info(f"Undefined node {name} tried to register")
-                self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
-                continue
-
-            address = address_bytes.decode()
-            self._registered_addresses[name] = address
-            logger.info(f"Node {name} registered with address {address}")
-
-        logger.info("All nodes registered. Graph is now ready.")
-
-    def _notify_nodes_their_neighbors(self) -> None:
-        for i in self.nodes:
-            neighbor_info_list = self._get_neighbor_info_list(i)
-            messages = [dumps(n_info).encode() for n_info in neighbor_info_list]
-
-            self._router.send_multipart([i.encode(), b"", *messages])
-
-        logger.info("Sent neighbor information to all nodes.")

@@ -16,3 +16,17 @@ class NeighborInfo(TypedDict):
     name: str
     address: str
     weight: float
+
+
+from typing import NamedTuple
+from zmq import SyncSocket
+
+
+class Neighbor(NamedTuple):
+    name: str
+    weight: float
+    address: str
+    in_socket: SyncSocket
+
+    def __eq__(self, name: str) -> bool:
+        return self.name == name
