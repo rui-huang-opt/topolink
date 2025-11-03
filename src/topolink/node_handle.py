@@ -41,8 +41,8 @@ class NodeHandle:
 
     Methods
     -------
-    send_to_all(data_to_send: dict[str, NDArray[float64]]) -> None
-        Sends data to all specified neighbor nodes.
+    send_each(data_by_neighbor: dict[str, NDArray[float64]]) -> None
+        Sends different data arrays to each specified neighbor node.
     broadcast(state: NDArray[float64]) -> None
         Broadcasts the given state to all neighbor nodes.
     gather() -> list[NDArray[float64]]
@@ -141,9 +141,9 @@ class NodeHandle:
 
         logger.info(f"Node '{self._name}' connected to all neighbors.")
 
-    def send_to_all(self, data_by_neighbor: dict[str, NDArray[float64]]) -> None:
+    def send_each(self, data_by_neighbor: dict[str, NDArray[float64]]) -> None:
         """
-        Sends data to all specified neighbor nodes.
+        Sends different data arrays to each specified neighbor node.
 
         Args:
             data_by_neighbor (dict[str, NDArray[float64]]): A dictionary mapping neighbor names to the data arrays to send.
@@ -173,7 +173,7 @@ class NodeHandle:
 
     def gather(self) -> dict[str, NDArray[float64]]:
         """
-        Receives and collects data from all neighbors.
+        Gathers data from all neighbors.
 
         Returns:
             dict[str, NDArray[float64]]: A dictionary mapping neighbor names to their received data arrays.

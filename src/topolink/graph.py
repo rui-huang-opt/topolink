@@ -6,7 +6,6 @@ import networkx as nx
 from json import dumps
 from typing import Any
 from zmq import Context, SyncSocket, ROUTER
-from matplotlib.axes import Axes
 from numpy import float64
 from numpy.typing import NDArray
 from .exceptions import ConnectivityError, InvalidWeightedMatrixError
@@ -53,8 +52,6 @@ class Graph:
         Adds nodes to the graph.
     add_edges(edges) -> None
         Adds edges to the graph.
-    draw(ax, **kwargs) -> None
-        Draws the graph on a given matplotlib Axes.
     adjacency(node) -> AdjView
         Returns the adjacency view for a specified node.
     deploy() -> None
@@ -153,26 +150,6 @@ class Graph:
 
     def add_edges(self, edges: EdgeInput) -> None:
         self._nx_graph.add_edges_from(edges)
-
-    def draw(self, ax: Axes, **kwargs) -> None:
-        """
-        Draws the graph using NetworkX's drawing functionality on the provided matplotlib Axes.
-
-        Parameters:
-            ax (Axes): A matplotlib Axes object where the graph will be drawn.
-            **kwargs: Additional keyword arguments passed to `networkx.draw` for customizing the drawing.
-
-        Returns:
-            None
-        """
-        nx_graph = self._nx_graph
-
-        pos = nx.spring_layout(nx_graph)
-
-        options = {"pos": pos, "ax": ax, "with_labels": True}
-        options.update(kwargs)
-
-        nx.draw(nx_graph, **options)
 
     def adjacency(self, node: str) -> AdjView:
         """
