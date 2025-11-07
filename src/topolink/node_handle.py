@@ -3,6 +3,7 @@ from logging import getLogger
 logger = getLogger(f"topolink.node_handle")
 
 from json import loads
+from typing import Callable
 from zmq import REQ, ROUTER, DEALER, SNDTIMEO, RCVTIMEO, IDENTITY
 from zmq import Context, Again
 from numpy import float64, frombuffer
@@ -10,7 +11,7 @@ from numpy.typing import NDArray
 from .exceptions import NodeUndefinedError, NodeJoinTimeoutError, NodeDiscoveryError
 from .types import NeighborInfo, Neighbor
 from .utils import get_local_ip
-from .discovery import discover_graph_endpoint
+from .discovery import discover_graph
 
 
 class NodeHandle:
@@ -27,30 +28,42 @@ class NodeHandle:
     ----------
     name : str
         Unique identifier for the node.
+
     graph_name : str, optional
         Name of the graph to connect to (default is "default"). This should match the name used during graph creation.
+
+    mask : Callable[[NDArray[float64]], NDArray[float64]], optional
+        A function to apply to the state before sending it to neighbors (default is identity function).
+        This can be used to add noise, apply privacy mechanisms, or modify the state in other ways.
 
     Attributes
     ----------
     name : str
         Name of the node.
+
     num_neighbors : int
         Number of neighbor nodes.
+
     neighbor_names : KeysView[str]
         Names of all neighbor nodes.
 
     Methods
     -------
-    send_each(data_by_neighbor: dict[str, NDArray[float64]]) -> None
-        Sends different data arrays to each specified neighbor node.
+    send_each(state_by_neighbor: dict[str, NDArray[float64]]) -> None
+        Sends different state arrays to each specified neighbor node.
+
     broadcast(state: NDArray[float64]) -> None
         Broadcasts the given state to all neighbor nodes.
+
     gather() -> list[NDArray[float64]]
-        Receives and collects data from all neighbors.
+        Receives and collects state from all neighbors.
+
     weighted_gather() -> list[NDArray[float64]]
-        Gathers data from all neighbors, applying corresponding weights.
+        Gathers state from all neighbors, applying corresponding weights.
+
     laplacian(state: NDArray[float64]) -> NDArray[float64]
         Computes the Laplacian of the given state vector based on the states of neighboring nodes.
+
     weighted_mix(state: NDArray[float64]) -> NDArray[float64]
         Performs the weighted mixing operation for distributed optimization using the weight matrix W.
 
@@ -61,17 +74,24 @@ class NodeHandle:
     - Laplacian and weighted mixing operations are useful for consensus and distributed optimization algorithms.
     """
 
-    def __init__(self, name: str, graph_name: str = "default") -> None:
-        endpoint = discover_graph_endpoint(graph_name)
+    def __init__(
+        self,
+        name: str,
+        graph_name: str = "default",
+        mask: Callable[[NDArray[float64]], NDArray[float64]] = lambda x: x,
+    ) -> None:
+        self._name = name
+        self._graph_name = graph_name
+        self._mask = mask
+
+        endpoint = discover_graph(graph_name)
 
         if endpoint is None:
             err_msg = f"Timeout: Node '{name}' can't discover graph '{graph_name}'."
             logger.error(err_msg)
             raise NodeDiscoveryError(err_msg)
 
-        self._name = name
         self._graph_ip_addr, self._graph_port = endpoint
-        self._graph_name = graph_name
 
         self._context = Context()
         self._req = self._context.socket(REQ)
@@ -141,20 +161,21 @@ class NodeHandle:
 
         logger.info(f"Node '{self._name}' connected to all neighbors.")
 
-    def send_each(self, data_by_neighbor: dict[str, NDArray[float64]]) -> None:
+    def send_each(self, state_by_neighbor: dict[str, NDArray[float64]]) -> None:
         """
-        Sends different data arrays to each specified neighbor node.
+        Sends different state arrays to each specified neighbor node.
 
         Args:
-            data_by_neighbor (dict[str, NDArray[float64]]): A dictionary mapping neighbor names to the data arrays to send.
+            state_by_neighbor (dict[str, NDArray[float64]]): A dictionary mapping neighbor names to the state arrays to send.
 
         Returns:
             None
         """
-        for n_name, data in data_by_neighbor.items():
+        for n_name, state in state_by_neighbor.items():
             assert n_name in self.neighbor_names, f"Neighbor {n_name} not found."
 
-            data_bytes = data.tobytes()
+            masked_data = self._mask(state)
+            data_bytes = masked_data.tobytes()
             self._out_socket.send_multipart([n_name.encode(), data_bytes])
 
     def broadcast(self, state: NDArray[float64]) -> None:
@@ -167,7 +188,8 @@ class NodeHandle:
         Returns:
             None
         """
-        state_bytes = state.tobytes()
+        masked_state = self._mask(state)
+        state_bytes = masked_state.tobytes()
         for neighbor in self._neighbors:
             self._out_socket.send_multipart([neighbor.name.encode(), state_bytes])
 

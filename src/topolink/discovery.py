@@ -66,7 +66,7 @@ class GraphListener(ServiceListener):
             logger.info(f"Graph service '{name}' removed")
 
 
-def discover_graph_endpoint(graph_name: str) -> tuple[str, int] | None:
+def discover_graph(graph_name: str) -> tuple[str, int] | None:
     service_name = graph_name + "." + SERVICE_TYPE
     zeroconf_ = Zeroconf()
 

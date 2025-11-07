@@ -22,12 +22,16 @@ class Graph:
     ----------
     nodes : NodeInput | None, optional
         An iterable of node names to initialize the graph. If None, the graph starts empty.
+
     edges : EdgeInput | None, optional
         An iterable of edges (tuples of node names) to initialize the graph. If None, the graph starts with no edges.
+
     name : str, optional
         The name of the graph service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
+
     *args : Any
         Additional positional arguments (not used).
+
     **kwargs : Any
         Additional keyword arguments. If 'nx_graph' is provided, it will be used directly as the internal graph representation.
 
@@ -35,12 +39,16 @@ class Graph:
     ----------
     nodes : NodeView
         A view of the nodes in the graph.
+
     edges : EdgeView
         A view of the edges in the graph.
+
     number_of_nodes : int
         The number of nodes in the graph.
+
     number_of_edges : int
         The number of edges in the graph.
+
     is_connected : bool
         Indicates whether the graph is connected.
 
@@ -48,12 +56,16 @@ class Graph:
     -------
     from_mixing_matrix(mixing_matrix, nodes=None) -> "Graph"
         Alternative constructor to create a Graph from a symmetric, double-stochastic mixing matrix.
+
     add_nodes(nodes) -> None
         Adds nodes to the graph.
+
     add_edges(edges) -> None
         Adds edges to the graph.
+
     adjacency(node) -> AdjView
         Returns the adjacency view for a specified node.
+
     deploy() -> None
         Deploys the network topology by registering nodes, notifying them of their neighbors, and unregistering nodes.
 
@@ -108,6 +120,7 @@ class Graph:
         ----------
         mixing_matrix : NDArray[float64]
             A square matrix representing the mixing coefficients between nodes.
+
         nodes : list[str], optional
             A list of self defined node names. If not provided, nodes will be named sequentially as "1", "2", ..., "n".
         """
