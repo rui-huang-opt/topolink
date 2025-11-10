@@ -174,9 +174,9 @@ class NodeHandle:
         for n_name, state in state_by_neighbor.items():
             assert n_name in self.neighbor_names, f"Neighbor {n_name} not found."
 
-            masked_data = self._mask(state)
-            data_bytes = masked_data.tobytes()
-            self._out_socket.send_multipart([n_name.encode(), data_bytes])
+            masked_state = self._mask(state.astype(float64, copy=False))
+            state_bytes = masked_state.tobytes()
+            self._out_socket.send_multipart([n_name.encode(), state_bytes])
 
     def broadcast(self, state: NDArray[float64]) -> None:
         """
@@ -188,7 +188,7 @@ class NodeHandle:
         Returns:
             None
         """
-        masked_state = self._mask(state)
+        masked_state = self._mask(state.astype(float64, copy=False))
         state_bytes = masked_state.tobytes()
         for neighbor in self._neighbors:
             self._out_socket.send_multipart([neighbor.name.encode(), state_bytes])
