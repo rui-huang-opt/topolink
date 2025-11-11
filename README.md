@@ -39,20 +39,21 @@ An **undirected graph** represents pairwise connections between objects without 
 #### **Define and Visualize the Graph**
 
 ```python
-# On the master (graph coordinator) machine
-from topolink import Graph
-
 nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 # Create the graph object
-ring = Graph(nodes, edges)
+import networkx as nx
+
+ring = nx.Graph()
+ring.add_nodes_from(nodes)
+ring.add_edges_from(edges)
 
 # Visualize the topology
 import matplotlib.pyplot as plt
 
 fig, ax = plt.subplots()
-ring.draw(ax)
+nx.draw(ring, ax=ax, with_labels=True)
 plt.show()
 ```
 
