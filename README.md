@@ -129,7 +129,7 @@ from topolink import NodeHandle
 node_name = "1"  # Change this for each node (e.g., "2", "3", ...)
 
 # Join the network
-nh = NodeHandle.create(node_name)
+nh = NodeHandle(node_name)
 
 # Achieve state convergence across all nodes through neighbor communication
 import numpy as np
