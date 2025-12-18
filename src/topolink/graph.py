@@ -206,16 +206,17 @@ class Graph:
 
     def _register_nodes(self) -> None:
         while len(self._registered_nodes) < self.number_of_nodes:
-            name_bytes, _, endpoint_bytes = self._router.recv_multipart()
+            name_bytes, endpoint_bytes = self._router.recv_multipart()
             name = name_bytes.decode()
 
             if name not in self.nodes:
-                self._router.send_multipart([name_bytes, b"", b"Error: Undefined node"])
+                self._router.send_multipart([name_bytes, b"Error: Undefined node"])
                 continue
 
             endpoint = endpoint_bytes.decode()
             self._registered_nodes[name] = endpoint
             logger.info(f"Node '{name}' joined graph '{self._name}' from {endpoint}.")
+            self._router.send_multipart([name_bytes, b"OK"])
 
         logger.info(f"Graph '{self._name}' registration complete.")
 
@@ -224,7 +225,7 @@ class Graph:
             neighbor_info_list = self._get_neighbor_info_list(i)
             messages = [dumps(n_info).encode() for n_info in neighbor_info_list]
 
-            self._router.send_multipart([i.encode(), b"", *messages])
+            self._router.send_multipart([i.encode(), *messages])
 
         logger.info(f"Sent neighbor information to all nodes in graph '{self._name}'.")
 

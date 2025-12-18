@@ -7,19 +7,13 @@ class GraphError(Exception):
     pass
 
 
-class GraphInitializationError(GraphError):
-    """Exception raised during graph initialization."""
-
-    pass
-
-
-class ConnectivityError(GraphInitializationError):
+class ConnectivityError(GraphError):
     """Exception raised when the graph is not fully connected."""
 
     pass
 
 
-class InvalidWeightedMatrixError(GraphInitializationError):
+class InvalidWeightedMatrixError(GraphError):
     """Exception raised when the graph is defined with a non-symmetric or non-double-stochastic matrix."""
 
     pass
@@ -31,25 +25,13 @@ class NodeError(Exception):
     pass
 
 
-class NodeJoinError(NodeError):
-    """Exception raised when a node fails to join the graph."""
-
-    pass
-
-
-class NodeDiscoveryError(NodeJoinError):
+class NodeDiscoveryError(NodeError):
     """Exception raised when the graph service cannot be discovered by the node."""
 
     pass
 
 
-class NodeUndefinedError(NodeJoinError):
+class NodeUndefinedError(NodeError):
     """Exception raised when a node is not defined in the graph but tried to join the graph."""
-
-    pass
-
-
-class NodeJoinTimeoutError(NodeJoinError):
-    """Exception raised when a node fails to join the graph due to a timeout."""
 
     pass

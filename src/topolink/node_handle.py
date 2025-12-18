@@ -4,11 +4,10 @@ logger = getLogger(f"topolink.node_handle")
 
 from json import loads
 from typing import Callable
-from zmq import REQ, ROUTER, DEALER, SNDTIMEO, RCVTIMEO, IDENTITY
-from zmq import Context, Again
+from zmq import ROUTER, DEALER, IDENTITY, Context
 from numpy import float64, frombuffer
 from numpy.typing import NDArray
-from .exceptions import NodeUndefinedError, NodeJoinTimeoutError, NodeDiscoveryError
+from .exceptions import NodeUndefinedError, NodeDiscoveryError
 from .types import NeighborInfo, Neighbor
 from .utils import get_local_ip
 from .discovery import discover_graph
@@ -94,10 +93,8 @@ class NodeHandle:
         self._graph_ip_addr, self._graph_port = endpoint
 
         self._context = Context()
-        self._req = self._context.socket(REQ)
-        self._req.setsockopt(SNDTIMEO, 5000)
-        self._req.setsockopt(RCVTIMEO, 5000)
-        self._req.setsockopt(IDENTITY, self._name.encode())
+        self._reg = self._context.socket(DEALER)
+        self._reg.setsockopt(IDENTITY, self._name.encode())
 
         self._weight = 1.0
         self._out_socket = self._context.socket(ROUTER)
@@ -107,6 +104,7 @@ class NodeHandle:
         self._neighbors: list[Neighbor] = []
 
         self._register_to_graph()
+        self._setup_neighbors()
         self._connect_to_neighbors()
 
     @property
@@ -122,27 +120,27 @@ class NodeHandle:
         return [neighbor.name for neighbor in self._neighbors]
 
     def _register_to_graph(self) -> None:
-        try:
-            self._req.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
-            self._req.send(self._ip_address.encode() + b":" + str(self._port).encode())
-            reply = self._req.recv_multipart()
-        except Again:
-            err_msg = f"Timeout: Node '{self._name}' can't join the graph."
-            logger.error(err_msg)
-            raise NodeJoinTimeoutError(err_msg)
+        self._reg.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
+        self._reg.send(self._ip_address.encode() + b":" + str(self._port).encode())
+        reply = self._reg.recv()
 
-        if reply[0] == b"Error: Undefined node":
+        if reply == b"OK":
+            logger.info(f"Node '{self._name}' joined graph '{self._graph_name}'.")
+        elif reply == b"Error: Undefined node":
             err_msg = f"Undefined node '{self._name}' tried to join graph '{self._graph_name}'."
             logger.error(err_msg)
             raise NodeUndefinedError(err_msg)
 
-        for part in reply:
+    def _setup_neighbors(self) -> None:
+        message = self._reg.recv_multipart()
+
+        for part in message:
             neighbor_info: NeighborInfo = loads(part.decode())
             in_socket = self._context.socket(DEALER)
             self._neighbors.append(Neighbor(in_socket=in_socket, **neighbor_info))
 
         self._weight = 1.0 - sum(neighbor.weight for neighbor in self._neighbors)
-        logger.info(f"Node '{self._name}' joined graph '{self._graph_name}'.")
+        logger.info(f"Node '{self._name}' received neighbor info and set up sockets.")
 
     def _connect_to_neighbors(self) -> None:
         for neighbor in self._neighbors:
