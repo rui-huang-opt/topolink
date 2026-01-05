@@ -13,14 +13,18 @@ def get_local_ip() -> str:
             return "127.0.0.1"
 
 
-from numpy import sum as np_sum
+import numpy as np
 from numpy import allclose, float64
 from numpy.typing import NDArray
 
 
-def is_symmetric_double_stochastic(matrix: NDArray[float64]) -> bool:
-    """Check if a matrix is symmetric and double-stochastic."""
+def is_symmetric_doubly_stochastic(matrix: NDArray[float64]) -> bool:
+    """Check if a matrix is symmetric doubly stochastic."""
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        return False
     if not allclose(matrix, matrix.T):
         return False
+    if np.any(matrix < 0):
+        return False
 
-    return allclose(np_sum(matrix, axis=0), 1.0)
+    return allclose(np.sum(matrix, axis=0), 1.0)
