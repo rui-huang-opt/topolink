@@ -48,18 +48,23 @@ class Graph:
     Methods
     -------
     from_mixing_matrix(mixing_matrix, nodelist, name) -> Graph
+
         Class method to create a Graph instance from a symmetric doubly stochastic mixing matrix.
 
     add_nodes(nodes) -> None
+
         Adds nodes to the graph.
 
     add_edges(edges) -> None
+
         Adds edges to the graph.
 
     adjacency(node) -> AdjView
+
         Returns the adjacency view for a specified node.
 
     deploy() -> None
+
         Deploys the network topology by registering nodes, notifying them of their neighbors, and unregistering nodes.
 
     Notes

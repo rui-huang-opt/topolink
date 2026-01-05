@@ -1,6 +1,6 @@
 from logging import getLogger
 from json import loads
-from typing import Callable
+from typing import Callable, KeysView
 from dataclasses import dataclass
 
 import numpy as np
@@ -58,21 +58,27 @@ class NodeHandle:
     Methods
     -------
     send_each(state_by_neighbor: dict[str, NDArray[float64]]) -> None
+
         Sends different state arrays to each specified neighbor node.
 
     broadcast(state: NDArray[float64]) -> None
+
         Broadcasts the given state to all neighbor nodes.
 
-    gather() -> list[NDArray[float64]]
-        Receives and collects state from all neighbors.
+    gather() -> dict[str, NDArray[float64]]
 
-    weighted_gather() -> list[NDArray[float64]]
-        Gathers state from all neighbors, applying corresponding weights.
+        Gathers state from all neighbors.
+
+    weighted_gather() -> dict[str, NDArray[float64]]
+
+        Gathers weighted state from all neighbors.
 
     laplacian(state: NDArray[float64]) -> NDArray[float64]
+
         Computes the Laplacian of the given state vector based on the states of neighboring nodes.
 
     weighted_mix(state: NDArray[float64]) -> NDArray[float64]
+
         Performs the weighted mixing operation for distributed optimization using the weight matrix W.
 
     Notes
@@ -125,8 +131,8 @@ class NodeHandle:
         return len(self._neighbor_contexts)
 
     @property
-    def neighbor_names(self) -> list[str]:
-        return list(self._neighbor_contexts.keys())
+    def neighbor_names(self) -> KeysView[str]:
+        return self._neighbor_contexts.keys()
 
     def _register_to_graph(self) -> None:
         self._reg.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")

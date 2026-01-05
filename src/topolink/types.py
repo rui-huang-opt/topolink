@@ -15,14 +15,3 @@ from typing import TypedDict
 class NeighborInfo(TypedDict):
     endpoint: str
     weight: float
-
-
-from dataclasses import dataclass
-from zmq import SyncSocket
-
-
-@dataclass(slots=True)
-class Neighbor:
-    weight: float
-    endpoint: str
-    in_socket: SyncSocket
