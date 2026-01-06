@@ -55,31 +55,9 @@ class NodeHandle:
     neighbor_names : KeysView[str]
         Names of all neighbor nodes.
 
-    Methods
-    -------
-    send_each(state_by_neighbor: dict[str, NDArray[float64]]) -> None
-
-        Sends different state arrays to each specified neighbor node.
-
-    broadcast(state: NDArray[float64]) -> None
-
-        Broadcasts the given state to all neighbor nodes.
-
-    gather() -> dict[str, NDArray[float64]]
-
-        Gathers state from all neighbors.
-
-    weighted_gather() -> dict[str, NDArray[float64]]
-
-        Gathers weighted state from all neighbors.
-
-    laplacian(state: NDArray[float64]) -> NDArray[float64]
-
-        Computes the Laplacian of the given state vector based on the states of neighboring nodes.
-
-    weighted_mix(state: NDArray[float64]) -> NDArray[float64]
-
-        Performs the weighted mixing operation for distributed optimization using the weight matrix W.
+    neighbor_weights : dict[str, float]
+        Weights associated with each neighbor node.
+        If no weights were specified during graph creation, 1.0 is used for all neighbors.
 
     Notes
     -----
@@ -134,6 +112,10 @@ class NodeHandle:
     def neighbor_names(self) -> KeysView[str]:
         return self._neighbor_contexts.keys()
 
+    @property
+    def neighbor_weights(self) -> dict[str, float]:
+        return {n_name: nc.weight for n_name, nc in self._neighbor_contexts.items()}
+
     def _register_to_graph(self) -> None:
         self._reg.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
         self._reg.send(self._ip_address.encode() + b":" + str(self._port).encode())
@@ -179,65 +161,54 @@ class NodeHandle:
 
         logger.info(f"Node '{self._name}' connected to all neighbors.")
 
-    def send_each(self, state_by_neighbor: dict[str, NDArray[np.float64]]) -> None:
+    def exchange_map(
+        self, state_map: dict[str, NDArray[np.float64]]
+    ) -> dict[str, NDArray[np.float64]]:
         """
-        Sends different state arrays to each specified neighbor node.
+        Exchanges the given state map with all neighbor nodes.
+
+        This method broadcasts the state map to all neighbors and then gathers their states.
 
         Args:
-            state_by_neighbor (dict[str, NDArray[np.float64]]): A dictionary mapping neighbor names to the state arrays to send.
+            state_map (dict[str, NDArray[np.float64]]): The state map to exchange with neighbors.
 
         Returns:
-            None
+            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state maps.
         """
-        if state_by_neighbor.keys() != self._neighbor_contexts.keys():
-            missing = self._neighbor_contexts.keys() - state_by_neighbor.keys()
-            extra = state_by_neighbor.keys() - self._neighbor_contexts.keys()
+        if state_map.keys() != self._neighbor_contexts.keys():
+            missing = self._neighbor_contexts.keys() - state_map.keys()
+            extra = state_map.keys() - self._neighbor_contexts.keys()
             err_msg = f"State dictionary keys do not match neighbor names. Missing: {missing}, Extra: {extra}."
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        for n_name, state in state_by_neighbor.items():
-            masked_state = self._mask(state.astype(np.float64, copy=False))
-            state_bytes = masked_state.tobytes()
-            self._out_socket.send_multipart([n_name.encode(), state_bytes])
-
-    def broadcast(self, state: NDArray[np.float64]) -> None:
-        """
-        Broadcasts the given state to all neighbor nodes.
-
-        Args:
-            state (NDArray[np.float64]): The state array to broadcast to neighbors.
-
-        Returns:
-            None
-        """
-        masked_state = self._mask(state.astype(np.float64, copy=False))
-        state_bytes = masked_state.tobytes()
         for n_name in self._neighbor_contexts:
-            self._out_socket.send_multipart([n_name.encode(), state_bytes])
+            masked_state = self._mask(state_map[n_name]).astype(np.float64, copy=False)
+            self._out_socket.send_multipart([n_name.encode(), masked_state], copy=False)
 
-    def gather(self) -> dict[str, NDArray[np.float64]]:
-        """
-        Gathers data from all neighbors.
-
-        Returns:
-            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received data arrays.
-        """
         return {
-            n_name: np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
+            n_name: np.frombuffer(nc.in_socket.recv(), dtype=np.float64) * nc.weight
             for n_name, nc in self._neighbor_contexts.items()
         }
 
-    def weighted_gather(self) -> dict[str, NDArray[np.float64]]:
+    def exchange(self, state: NDArray[np.float64]) -> dict[str, NDArray[np.float64]]:
         """
-        Gathers data from all neighbors, applying corresponding weights to each received array.
+        Exchanges the given state with all neighbor nodes.
+
+        This method broadcasts the state to all neighbors and then gathers their states.
+
+        Args:
+            state (NDArray[np.float64]): The state array to exchange with neighbors.
 
         Returns:
-            dict[str, NDArray[float64]]: A dictionary mapping neighbor names to their weighted data arrays.
-            and multiplied by its associated weight.
+            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
+        masked_state = self._mask(state).astype(np.float64, copy=False)
+        for n_name in self._neighbor_contexts:
+            self._out_socket.send_multipart([n_name.encode(), masked_state], copy=False)
+
         return {
-            n_name: np.frombuffer(nc.in_socket.recv(), dtype=np.float64) * nc.weight
+            n_name: np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
             for n_name, nc in self._neighbor_contexts.items()
         }
 
@@ -255,10 +226,10 @@ class NodeHandle:
         Returns:
             NDArray[float64]: The Laplacian vector representing the difference between the current state and the average state of its neighbors.
         """
-        self.broadcast(state)
-        neighbor_states = self.gather()
-
-        laplacian = state * len(neighbor_states) - sum(neighbor_states.values())
+        neighbor_states = self.exchange(state)
+        laplacian = state * len(neighbor_states)
+        for n_state in neighbor_states.values():
+            laplacian -= n_state
 
         return laplacian
 
@@ -280,9 +251,10 @@ class NodeHandle:
         Returns:
             NDArray[float64]: The mixed state vector corresponding to the i-th row of Wx.
         """
-        self.broadcast(state)
-        weighted_neighbor_states = self.weighted_gather()
-
-        mixed_state = state * self._weight + sum(weighted_neighbor_states.values())
+        neighbor_states = self.exchange(state)
+        mixed_state = state * self._weight
+        for n_name, n_state in neighbor_states.items():
+            nc = self._neighbor_contexts[n_name]
+            mixed_state += n_state * nc.weight
 
         return mixed_state

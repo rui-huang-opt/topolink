@@ -4,7 +4,14 @@ from socket import socket, AF_INET, SOCK_DGRAM
 
 
 def get_local_ip() -> str:
-    """Get the local IP address of the machine."""
+    """
+    Get the local IP address of the machine.
+
+    Returns
+    -------
+    str
+        The local IP address.
+    """
     with socket(AF_INET, SOCK_DGRAM) as s:
         try:
             s.connect(("8.8.8.8", 80))
@@ -19,7 +26,19 @@ from numpy.typing import NDArray
 
 
 def is_symmetric_doubly_stochastic(matrix: NDArray[float64]) -> bool:
-    """Check if a matrix is symmetric doubly stochastic."""
+    """
+    Check if a matrix is symmetric doubly stochastic.
+
+    Parameters
+    ----------
+    matrix : NDArray[float64]
+        The matrix to check.
+
+    Returns
+    -------
+    bool
+        True if the matrix is symmetric doubly stochastic, False otherwise.
+    """
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         return False
     if not allclose(matrix, matrix.T):

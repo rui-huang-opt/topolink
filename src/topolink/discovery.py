@@ -1,12 +1,12 @@
-from logging import getLogger
-
-logger = getLogger("topolink.discovery")
-
 import socket
 import threading
+from logging import getLogger
+
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
 
 SERVICE_TYPE = "_topolink._tcp.local."
+
+logger = getLogger("topolink.discovery")
 
 
 class GraphAdvertiser:

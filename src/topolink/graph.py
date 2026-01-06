@@ -45,28 +45,6 @@ class Graph:
     is_connected : bool
         Indicates whether the graph is connected.
 
-    Methods
-    -------
-    from_mixing_matrix(mixing_matrix, nodelist, name) -> Graph
-
-        Class method to create a Graph instance from a symmetric doubly stochastic mixing matrix.
-
-    add_nodes(nodes) -> None
-
-        Adds nodes to the graph.
-
-    add_edges(edges) -> None
-
-        Adds edges to the graph.
-
-    adjacency(node) -> AdjView
-
-        Returns the adjacency view for a specified node.
-
-    deploy() -> None
-
-        Deploys the network topology by registering nodes, notifying them of their neighbors, and unregistering nodes.
-
     Notes
     -----
     - Uses ZeroMQ for communication between nodes.
@@ -162,12 +140,41 @@ class Graph:
         return nx.is_connected(self._nx_graph)
 
     def add_nodes(self, nodes: NodeInput) -> None:
+        """
+        Add nodes to the graph.
+
+        Parameters
+        ----------
+        nodes : NodeInput
+            An iterable of node names to add to the graph.
+        """
         self._nx_graph.add_nodes_from(nodes)
 
     def add_edges(self, edges: EdgeInput) -> None:
+        """
+        Add edges to the graph.
+
+        Parameters
+        ----------
+        edges : EdgeInput
+            An iterable of edges (tuples of node names) to add to the graph.
+        """
         self._nx_graph.add_edges_from(edges)
 
     def adjacency(self, node: str) -> AdjView:
+        """
+        Get the adjacency view of a specific node.
+
+        Parameters
+        ----------
+        node : str
+            The name of the node.
+
+        Returns
+        -------
+        AdjView
+            The adjacency view of the specified node.
+        """
         return self._nx_graph[node]
 
     def _get_neighbor_info_dict(self, node: str) -> dict[str, NeighborInfo]:
