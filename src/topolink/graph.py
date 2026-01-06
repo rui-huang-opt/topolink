@@ -47,10 +47,9 @@ class Graph:
 
     Notes
     -----
-    - Uses ZeroMQ for communication between nodes.
     - The graph must be connected before deployment.
-    - The `nx_graph` keyword argument is intended for internal use only and should not be set from outside this package.
     - The `from_mixing_matrix` method provides a convenient way to create a graph from a mixing matrix, ensuring the matrix is symmetric and double-stochastic.
+    - Throughout the code, we use 'i' to denote the current node and 'j' to denote neighbor nodes, following common conventions in graph theory and distributed algorithms.
     """
 
     def __init__(
@@ -161,13 +160,13 @@ class Graph:
         """
         self._nx_graph.add_edges_from(edges)
 
-    def adjacency(self, node: str) -> AdjView:
+    def adjacency(self, i: str) -> AdjView:
         """
-        Get the adjacency view of a specific node.
+        Get the adjacency view of a specific node i.
 
         Parameters
         ----------
-        node : str
+        i : str
             The name of the node.
 
         Returns
@@ -175,23 +174,23 @@ class Graph:
         AdjView
             The adjacency view of the specified node.
         """
-        return self._nx_graph[node]
+        return self._nx_graph[i]
 
-    def _get_neighbor_info_dict(self, node: str) -> dict[str, NeighborInfo]:
+    def _get_neighbor_info_dict(self, i: str) -> dict[str, NeighborInfo]:
         # When the assert fails, it indicates a bug in the deployment logic.
-        assert node in self.nodes, f"Node '{node}' is not defined in the graph."
+        assert i in self.nodes, f"Node '{i}' is not defined in the graph."
 
         neighbor_info_dict: dict[str, NeighborInfo] = {}
-        adjacency = self.adjacency(node)
-        for neighbor in adjacency:
-            endpoint = self._node_registry.get(neighbor, "")
+        n_i = self.adjacency(i)
+        for j in n_i:
+            endpoint = self._node_registry.get(j, "")
 
             # When the assert fails, it indicates a bug in the deployment logic.
-            assert endpoint, f"Node '{neighbor}' has not registered."
+            assert endpoint, f"Node '{j}' has not registered."
 
-            weight = adjacency[neighbor].get("weight", 1.0)
-            n_info = NeighborInfo(endpoint=endpoint, weight=weight)
-            neighbor_info_dict[neighbor] = n_info
+            weight = n_i[j].get("weight", 1.0)
+            info = NeighborInfo(endpoint=endpoint, weight=weight)
+            neighbor_info_dict[j] = info
 
         return neighbor_info_dict
 

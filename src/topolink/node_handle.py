@@ -61,9 +61,7 @@ class NodeHandle:
 
     Notes
     -----
-    - Uses ZeroMQ sockets for communication.
-    - State information is exchanged as NumPy arrays of float64, serialized to bytes.
-    - Laplacian and weighted mixing operations are useful for consensus and distributed optimization algorithms.
+    - Throughout the code, we use 'i' to denote the current node and 'j' to denote neighbor nodes, following common conventions in graph theory and distributed algorithms.
     """
 
     def __init__(
@@ -114,7 +112,7 @@ class NodeHandle:
 
     @property
     def neighbor_weights(self) -> dict[str, float]:
-        return {n_name: nc.weight for n_name, nc in self._neighbor_contexts.items()}
+        return {j: nc.weight for j, nc in self._neighbor_contexts.items()}
 
     def _register_to_graph(self) -> None:
         self._reg.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
@@ -136,10 +134,10 @@ class NodeHandle:
         message = self._reg.recv()
         neighbor_info_dict: dict[str, NeighborInfo] = loads(message.decode())
 
-        for n_name, n_info in neighbor_info_dict.items():
+        for j, info in neighbor_info_dict.items():
             in_socket = self._context.socket(zmq.DEALER)
-            nc = NeighborContext(in_socket=in_socket, **n_info)
-            self._neighbor_contexts[n_name] = nc
+            nc = NeighborContext(in_socket=in_socket, **info)
+            self._neighbor_contexts[j] = nc
 
         self._weight = 1.0 - sum(nc.weight for nc in self._neighbor_contexts.values())
         logger.info(f"Node '{self._name}' received neighbor info and set up sockets.")
@@ -182,13 +180,13 @@ class NodeHandle:
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        for n_name in self._neighbor_contexts:
-            masked_state = self._mask(state_map[n_name]).astype(np.float64, copy=False)
-            self._out_socket.send_multipart([n_name.encode(), masked_state], copy=False)
+        for j in self._neighbor_contexts:
+            masked_state = self._mask(state_map[j]).astype(np.float64, copy=False)
+            self._out_socket.send_multipart([j.encode(), masked_state], copy=False)
 
         return {
-            n_name: np.frombuffer(nc.in_socket.recv(), dtype=np.float64) * nc.weight
-            for n_name, nc in self._neighbor_contexts.items()
+            j: np.frombuffer(nc.in_socket.recv(), dtype=np.float64) * nc.weight
+            for j, nc in self._neighbor_contexts.items()
         }
 
     def exchange(self, state: NDArray[np.float64]) -> dict[str, NDArray[np.float64]]:
@@ -204,12 +202,12 @@ class NodeHandle:
             dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
         masked_state = self._mask(state).astype(np.float64, copy=False)
-        for n_name in self._neighbor_contexts:
-            self._out_socket.send_multipart([n_name.encode(), masked_state], copy=False)
+        for j in self._neighbor_contexts:
+            self._out_socket.send_multipart([j.encode(), masked_state], copy=False)
 
         return {
-            n_name: np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
-            for n_name, nc in self._neighbor_contexts.items()
+            j: np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
+            for j, nc in self._neighbor_contexts.items()
         }
 
     def laplacian(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
@@ -227,9 +225,7 @@ class NodeHandle:
             NDArray[float64]: The Laplacian vector representing the difference between the current state and the average state of its neighbors.
         """
         neighbor_states = self.exchange(state)
-        laplacian = state * len(neighbor_states)
-        for n_state in neighbor_states.values():
-            laplacian -= n_state
+        laplacian = state * len(neighbor_states) - sum(neighbor_states.values())
 
         return laplacian
 
@@ -252,9 +248,10 @@ class NodeHandle:
             NDArray[float64]: The mixed state vector corresponding to the i-th row of Wx.
         """
         neighbor_states = self.exchange(state)
-        mixed_state = state * self._weight
-        for n_name, n_state in neighbor_states.items():
-            nc = self._neighbor_contexts[n_name]
-            mixed_state += n_state * nc.weight
+        nc = self._neighbor_contexts
+        mixed_state = state * self._weight + sum(
+            neighbor_state * nc[j].weight
+            for j, neighbor_state in neighbor_states.items()
+        )
 
         return mixed_state
