@@ -126,10 +126,10 @@ ring.deploy()
 # On each node machine/process
 from topolink import NodeHandle
 
-node_name = "1"  # Change this for each node (e.g., "2", "3", ...)
+node_idx = "1"  # Change this for each node (e.g., "2", "3", ...)
 
 # Join the network
-nh = NodeHandle(node_name)
+nh = NodeHandle(node_idx)
 
 # Achieve state convergence across all nodes through neighbor communication
 import numpy as np
@@ -139,13 +139,13 @@ state = np.random.uniform(-100.0, 100.0, 3)
 
 alpha = 0.45
 
-print(f"Node {node_name} initial state: {state}")
+print(f"Node {node_idx} initial state: {state}")
 
 for k in range(50):
    lap_state = nh.laplacian(state)
    state -= alpha * lap_state
 
-print(f"Node {node_name} final state: {state}")
+print(f"Node {node_idx} final state: {state}")
 ```
 
 ```
