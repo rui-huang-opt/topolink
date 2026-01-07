@@ -186,8 +186,8 @@ class NodeHandle:
 
         for j in self._neighbor_contexts:
             state = state_map[j]
-            masked_state = masked_state.astype(np.float64, copy=False)
-            masked_state = np.ascontiguousarray(self._mask(state))
+            masked_state = self._mask(state).astype(np.float64, copy=False)
+            masked_state = np.ascontiguousarray(masked_state)
             self._out_socket.send_multipart([j.encode(), masked_state], copy=False)
 
         return {
