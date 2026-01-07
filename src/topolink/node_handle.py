@@ -34,8 +34,8 @@ class NodeHandle:
 
     Parameters
     ----------
-    name : str
-        Unique identifier for the node.
+    idx : str
+        The index of the node within the graph.
 
     graph_name : str, optional
         Name of the graph to connect to (default is "default"). This should match the name used during graph creation.
@@ -46,18 +46,17 @@ class NodeHandle:
 
     Attributes
     ----------
-    name : str
-        Name of the node.
+    idx : str
+        The index of the node within the graph.
 
-    num_neighbors : int
-        Number of neighbor nodes.
+    degree : int
+        The number of neighbors connected to this node.
 
-    neighbor_names : KeysView[str]
-        Names of all neighbor nodes.
+    neighbors : KeysView[str]
+        A view of the names of the neighbor nodes.
 
-    neighbor_weights : dict[str, float]
-        Weights associated with each neighbor node.
-        If no weights were specified during graph creation, 1.0 is used for all neighbors.
+    weights : dict[str, float]
+        A dictionary mapping neighbor names to their corresponding weights.
 
     Notes
     -----
@@ -66,18 +65,18 @@ class NodeHandle:
 
     def __init__(
         self,
-        name: str,
+        idx: str,
         graph_name: str = "default",
         mask: Callable[[NDArray[np.float64]], NDArray[np.float64]] = lambda x: x,
     ) -> None:
-        self._name = name
+        self._idx = idx
         self._graph_name = graph_name
         self._mask = mask
 
         endpoint = discover_graph(graph_name)
 
         if endpoint is None:
-            err_msg = f"Timeout: Node '{name}' can't discover graph '{graph_name}'."
+            err_msg = f"Timeout: Node '{idx}' can't discover graph '{graph_name}'."
             logger.error(err_msg)
             raise ConnectionError(err_msg)
 
@@ -85,7 +84,7 @@ class NodeHandle:
 
         self._context = zmq.Context()
         self._reg = self._context.socket(zmq.DEALER)
-        self._reg.setsockopt(zmq.IDENTITY, self._name.encode())
+        self._reg.setsockopt(zmq.IDENTITY, idx.encode())
 
         self._weight = 1.0
         self._out_socket = self._context.socket(zmq.ROUTER)
@@ -98,20 +97,25 @@ class NodeHandle:
         self._setup_neighbors()
         self._connect_to_neighbors()
 
-    @property
-    def name(self) -> str:
-        return self._name
+        # Cache neighbor indices as bytes for ZeroMQ communication.
+        # NOTE: Neighbor set is currently static.
+        # If dynamic neighbor updates are introduced, this cache must be refreshed.
+        self._neighbor_idx_bytes = [j.encode() for j in self._neighbor_contexts]
 
     @property
-    def num_neighbors(self) -> int:
+    def idx(self) -> str:
+        return self._idx
+
+    @property
+    def degree(self) -> int:
         return len(self._neighbor_contexts)
 
     @property
-    def neighbor_names(self) -> KeysView[str]:
+    def neighbors(self) -> KeysView[str]:
         return self._neighbor_contexts.keys()
 
     @property
-    def neighbor_weights(self) -> dict[str, float]:
+    def weights(self) -> dict[str, float]:
         return {j: nc.weight for j, nc in self._neighbor_contexts.items()}
 
     def _register_to_graph(self) -> None:
@@ -120,13 +124,13 @@ class NodeHandle:
         reply = self._reg.recv()
 
         if reply == b"OK":
-            logger.info(f"Node '{self._name}' joined graph '{self._graph_name}'.")
+            logger.info(f"Node '{self._idx}' joined graph '{self._graph_name}'.")
         elif reply == b"Error: Undefined node":
-            err_msg = f"Undefined node '{self._name}' tried to join graph '{self._graph_name}'."
+            err_msg = f"Undefined node '{self._idx}' tried to join graph '{self._graph_name}'."
             logger.error(err_msg)
             raise KeyError(err_msg)
         else:
-            err_msg = f"Node '{self._name}' failed to join graph '{self._graph_name}': {reply.decode()}."
+            err_msg = f"Node '{self._idx}' failed to join graph '{self._graph_name}': {reply.decode()}."
             logger.error(err_msg)
             raise ConnectionError(err_msg)
 
@@ -140,24 +144,24 @@ class NodeHandle:
             self._neighbor_contexts[j] = nc
 
         self._weight = 1.0 - sum(nc.weight for nc in self._neighbor_contexts.values())
-        logger.info(f"Node '{self._name}' received neighbor info and set up sockets.")
+        logger.info(f"Node '{self._idx}' received neighbor info and set up sockets.")
 
     def _connect_to_neighbors(self) -> None:
         for nc in self._neighbor_contexts.values():
-            nc.in_socket.setsockopt(zmq.IDENTITY, self._name.encode())
+            nc.in_socket.setsockopt(zmq.IDENTITY, self._idx.encode())
             nc.in_socket.connect(f"tcp://{nc.endpoint}")
 
         for nc in self._neighbor_contexts.values():
             nc.in_socket.send(b"")
 
         connected = set()
-        while len(connected) < self.num_neighbors:
+        while len(connected) < self.degree:
             client_id, _ = self._out_socket.recv_multipart()
             received_name = client_id.decode()
             if received_name in self._neighbor_contexts:
                 connected.add(received_name)
 
-        logger.info(f"Node '{self._name}' connected to all neighbors.")
+        logger.info(f"Node '{self._idx}' connected to all neighbors.")
 
     def exchange_map(
         self, state_map: dict[str, NDArray[np.float64]]
@@ -181,7 +185,9 @@ class NodeHandle:
             raise ValueError(err_msg)
 
         for j in self._neighbor_contexts:
-            masked_state = self._mask(state_map[j]).astype(np.float64, copy=False)
+            state = state_map[j]
+            masked_state = masked_state.astype(np.float64, copy=False)
+            masked_state = np.ascontiguousarray(self._mask(state))
             self._out_socket.send_multipart([j.encode(), masked_state], copy=False)
 
         return {
@@ -202,13 +208,39 @@ class NodeHandle:
             dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
         masked_state = self._mask(state).astype(np.float64, copy=False)
-        for j in self._neighbor_contexts:
-            self._out_socket.send_multipart([j.encode(), masked_state], copy=False)
+        masked_state = np.ascontiguousarray(masked_state)
+        for j_bytes in self._neighbor_idx_bytes:
+            self._out_socket.send_multipart([j_bytes, masked_state], copy=False)
 
         return {
             j: np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
             for j, nc in self._neighbor_contexts.items()
         }
+
+    def exchange_as_array(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
+        """
+        Exchanges the given state with all neighbor nodes and returns their states as a stacked array.
+
+        Note: Using this method will add an extra copy of the neighbor states in memory compared to the `exchange` method.
+        This is because the states are first received as individual memory buffers and then stacked into a single array.
+
+        Args:
+            state (NDArray[np.float64]): The state array to exchange with neighbors.
+
+        Returns:
+            NDArray[np.float64]: A 2D array where each row corresponds to a neighbor's received state array.
+        """
+        masked_state = self._mask(state).astype(np.float64, copy=False)
+        masked_state = np.ascontiguousarray(masked_state)
+        for j_bytes in self._neighbor_idx_bytes:
+            self._out_socket.send_multipart([j_bytes, masked_state], copy=False)
+
+        neighbor_states = [
+            np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
+            for nc in self._neighbor_contexts.values()
+        ]
+
+        return np.stack(neighbor_states, axis=0)
 
     def laplacian(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
         """

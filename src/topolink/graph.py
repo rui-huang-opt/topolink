@@ -203,17 +203,17 @@ class Graph:
 
     def _register_nodes(self) -> None:
         while len(self._node_registry) < self.number_of_nodes:
-            name_bytes, endpoint_bytes = self._router.recv_multipart()
-            name = name_bytes.decode()
+            idx_bytes, endpoint_bytes = self._router.recv_multipart()
+            idx = idx_bytes.decode()
 
-            if name not in self.nodes:
-                self._router.send_multipart([name_bytes, b"Error: Undefined node"])
+            if idx not in self.nodes:
+                self._router.send_multipart([idx_bytes, b"Error: Undefined node"])
                 continue
 
             endpoint = endpoint_bytes.decode()
-            self._node_registry[name] = endpoint
-            logger.info(f"Node '{name}' joined graph '{self._name}' from {endpoint}.")
-            self._router.send_multipart([name_bytes, b"OK"])
+            self._node_registry[idx] = endpoint
+            logger.info(f"Node '{idx}' joined graph '{self._name}' from {endpoint}.")
+            self._router.send_multipart([idx_bytes, b"OK"])
 
         logger.info(f"Graph '{self._name}' registration complete.")
 
