@@ -30,7 +30,7 @@ class NodeHandle:
     - Registration with a graph service to obtain neighbor information.
     - Establishing ZeroMQ sockets for communication with neighbors.
     - Sending and receiving state information to/from neighbors.
-    - Performing operations like broadcasting, gathering, computing Laplacians, and weighted mixing.
+    - Performing operations like exchanging states, computing Laplacians, and weighted mixing.
 
     Parameters
     ----------
