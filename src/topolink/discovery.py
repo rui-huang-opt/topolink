@@ -4,7 +4,14 @@ from logging import getLogger
 
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
 
+# Service type for Zeroconf
 SERVICE_TYPE = "_topolink._tcp.local."
+
+# Discovery parameters
+# Number of retries and timeout duration (in seconds)
+# These are for discovering a graph service on NodeHandle startup
+RETRIES = 3
+TIMEOUT = 5
 
 logger = getLogger("topolink.discovery")
 
@@ -68,19 +75,19 @@ class GraphListener(ServiceListener):
 
 def discover_graph(graph_name: str) -> tuple[str, int] | None:
     service_name = graph_name + "." + SERVICE_TYPE
-    zeroconf_ = Zeroconf()
 
-    try:
-        listener = GraphListener(graph_name)
-        browser = ServiceBrowser(zeroconf_, SERVICE_TYPE, listener)
+    for _ in range(RETRIES):
+        zeroconf_ = Zeroconf()
+        try:
+            listener = GraphListener(graph_name)
+            browser = ServiceBrowser(zeroconf_, SERVICE_TYPE, listener)
 
-        if not listener.service_found.wait(timeout=5):
-            return None
+            if listener.service_found.wait(timeout=TIMEOUT):
+                ip = listener.services[service_name][0]
+                port = listener.services[service_name][1]
+                return ip, port
+        finally:
+            browser.cancel()
+            zeroconf_.close()
 
-        graph_ip_addr: str = listener.services[service_name][0]
-        graph_port: int = listener.services[service_name][1]
-
-        return graph_ip_addr, graph_port
-    finally:
-        browser.cancel()
-        zeroconf_.close()
+    return None
