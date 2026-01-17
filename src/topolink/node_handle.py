@@ -1,5 +1,5 @@
 from logging import getLogger
-from json import loads
+from json import loads, dumps
 from typing import Callable, KeysView
 from dataclasses import dataclass
 
@@ -163,7 +163,7 @@ class NodeHandle:
 
         logger.info(f"Node '{self._idx}' connected to all neighbors.")
 
-    def exchange_map(
+    def neighborwise_exchange(
         self, state_map: dict[str, NDArray[np.float64]]
     ) -> dict[str, NDArray[np.float64]]:
         """
@@ -242,6 +242,27 @@ class NodeHandle:
 
         return np.stack(neighbor_states, axis=0)
 
+    def exchange_map(self, map: dict[str, float]) -> dict[str, dict[str, float]]:
+        """
+        Exchanges the given map with all neighbor nodes.
+        This method broadcasts the map to all neighbors and then gathers their maps.
+
+        This is a experimental feature and may be useful for multi-robot mapping applications.
+
+        Args:
+            map (dict[tuple[int, ...], float]): The map to exchange with neighbors.
+
+        Returns:
+            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received maps as arrays.
+        """
+        serialized_map = dumps(map).encode()
+        for j_bytes in self._neighbor_idx_bytes:
+            self._out_socket.send_multipart([j_bytes, serialized_map], copy=False)
+
+        return {
+            j: loads(nc.in_socket.recv()) for j, nc in self._neighbor_contexts.items()
+        }
+
     def laplacian(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
         """
         Computes the Laplacian of the given state vector based on the states of neighboring nodes.
@@ -287,3 +308,36 @@ class NodeHandle:
         )
 
         return mixed_state
+
+    def combine_maps(
+        self, local_map: dict[str, float], alpha: float = 0.5
+    ) -> dict[str, float]:
+        """
+        Combines the local map with neighbor maps using weighted averaging.
+        This is an experimental feature and may be useful for multi-robot mapping applications.
+
+        Args:
+            local_map (dict[str, float]): A local map to be combined with neighbor maps.
+
+            alpha (float): The weight for neighbor maps in the averaging process. Default is 0.5.
+
+        Returns:
+            dict[str, float]: The combined map after weighted averaging.
+        """
+
+        neighbor_maps = self.exchange_map(local_map)
+
+        new_keys = set(local_map.keys())
+        for neighbor_map in neighbor_maps.values():
+            new_keys = new_keys | neighbor_map.keys()
+
+        combined_map: dict[str, float] = {}
+        for key in new_keys:
+            local_value = local_map.get(key, 0.0)
+            n_values = [n_map.get(key, 0.0) for n_map in neighbor_maps.values()]
+            avg_n_value = sum(n_values) / len(n_values)
+            new_value = (1 - alpha) * local_value + alpha * avg_n_value
+
+            combined_map[key] = new_value
+
+        return combined_map
