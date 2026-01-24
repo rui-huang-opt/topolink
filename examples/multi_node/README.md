@@ -1,4 +1,4 @@
-# Test for synchronization
+# Scripts for multi-node test
 
 ## 1. Run the server script on your master machine:
 ```bash

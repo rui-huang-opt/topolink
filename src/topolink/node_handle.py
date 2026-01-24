@@ -40,7 +40,7 @@ class NodeHandle:
     graph_name : str, optional
         Name of the graph to connect to (default is "default"). This should match the name used during graph creation.
 
-    mask : Callable[[NDArray[float64]], NDArray[float64]], optional
+    mask : Callable[[NDArray[float64]], NDArray[np.number]], optional
         A function to apply to the state before sending it to neighbors (default is identity function).
         This can be used to add noise, apply privacy mechanisms, or modify the state in other ways.
 
@@ -60,14 +60,15 @@ class NodeHandle:
 
     Notes
     -----
-    - Throughout the code, we use 'i' to denote the current node and 'j' to denote neighbor nodes, following common conventions in graph theory and distributed algorithms.
+    - Throughout the code, we use 'i' to denote the current node and 'j' to denote neighbor nodes,
+      following common conventions in graph theory and distributed algorithms.
     """
 
     def __init__(
         self,
         idx: str,
         graph_name: str = "default",
-        mask: Callable[[NDArray[np.float64]], NDArray[np.float64]] = lambda x: x,
+        mask: Callable[[NDArray[np.float64]], NDArray[np.number]] = lambda x: x,
     ) -> None:
         self._idx = idx
         self._graph_name = graph_name
@@ -186,14 +187,19 @@ class NodeHandle:
 
         for j in self._neighbor_contexts:
             state = state_map[j]
-            masked_state = self._mask(state).astype(np.float64, copy=False)
-            masked_state = np.ascontiguousarray(masked_state)
-            self._out_socket.send_multipart([j.encode(), masked_state], copy=False)
+            masked_state = np.ascontiguousarray(self._mask(state))
+            dtype_bytes = masked_state.dtype.str.encode()
+            msgs = [j.encode(), dtype_bytes, masked_state]
+            self._out_socket.send_multipart(msgs, copy=False)
 
-        return {
-            j: np.frombuffer(nc.in_socket.recv(), dtype=np.float64) * nc.weight
-            for j, nc in self._neighbor_contexts.items()
-        }
+        neighbor_states: dict[str, NDArray[np.float64]] = {}
+        for j, nc in self._neighbor_contexts.items():
+            _dtype_bytes, state_bytes = nc.in_socket.recv_multipart()
+            dtype = np.dtype(_dtype_bytes.decode())
+            raw_state = np.frombuffer(state_bytes, dtype=dtype)
+            neighbor_states[j] = raw_state.astype(np.float64, copy=False)
+
+        return neighbor_states
 
     def exchange(self, state: NDArray[np.float64]) -> dict[str, NDArray[np.float64]]:
         """
@@ -207,15 +213,20 @@ class NodeHandle:
         Returns:
             dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
-        masked_state = self._mask(state).astype(np.float64, copy=False)
-        masked_state = np.ascontiguousarray(masked_state)
+        masked_state = np.ascontiguousarray(self._mask(state))
+        dtype_bytes = masked_state.dtype.str.encode()
         for j_bytes in self._neighbor_idx_bytes:
-            self._out_socket.send_multipart([j_bytes, masked_state], copy=False)
+            msgs = [j_bytes, dtype_bytes, masked_state]
+            self._out_socket.send_multipart(msgs, copy=False)
 
-        return {
-            j: np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
-            for j, nc in self._neighbor_contexts.items()
-        }
+        neighbor_states: dict[str, NDArray[np.float64]] = {}
+        for j, nc in self._neighbor_contexts.items():
+            _dtype_bytes, state_bytes = nc.in_socket.recv_multipart()
+            dtype = np.dtype(_dtype_bytes.decode())
+            raw_state = np.frombuffer(state_bytes, dtype=dtype)
+            neighbor_states[j] = raw_state.astype(np.float64, copy=False)
+
+        return neighbor_states
 
     def exchange_as_array(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
         """
@@ -230,38 +241,20 @@ class NodeHandle:
         Returns:
             NDArray[np.float64]: A 2D array where each row corresponds to a neighbor's received state array.
         """
-        masked_state = self._mask(state).astype(np.float64, copy=False)
-        masked_state = np.ascontiguousarray(masked_state)
+        masked_state = np.ascontiguousarray(self._mask(state))
+        dtype_bytes = masked_state.dtype.str.encode()
         for j_bytes in self._neighbor_idx_bytes:
-            self._out_socket.send_multipart([j_bytes, masked_state], copy=False)
+            msgs = [j_bytes, dtype_bytes, masked_state]
+            self._out_socket.send_multipart(msgs, copy=False)
 
-        neighbor_states = [
-            np.frombuffer(nc.in_socket.recv(), dtype=np.float64)
-            for nc in self._neighbor_contexts.values()
-        ]
+        neighbor_states: list[NDArray[np.float64]] = []
+        for nc in self._neighbor_contexts.values():
+            _dtype_bytes, state_bytes = nc.in_socket.recv_multipart()
+            dtype = np.dtype(_dtype_bytes.decode())
+            raw_state = np.frombuffer(state_bytes, dtype=dtype)
+            neighbor_states.append(raw_state.astype(np.float64, copy=False))
 
         return np.stack(neighbor_states, axis=0)
-
-    def exchange_map(self, map: dict[str, float]) -> dict[str, dict[str, float]]:
-        """
-        Exchanges the given map with all neighbor nodes.
-        This method broadcasts the map to all neighbors and then gathers their maps.
-
-        This is a experimental feature and may be useful for multi-robot mapping applications.
-
-        Args:
-            map (dict[tuple[int, ...], float]): The map to exchange with neighbors.
-
-        Returns:
-            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received maps as arrays.
-        """
-        serialized_map = dumps(map).encode()
-        for j_bytes in self._neighbor_idx_bytes:
-            self._out_socket.send_multipart([j_bytes, serialized_map], copy=False)
-
-        return {
-            j: loads(nc.in_socket.recv()) for j, nc in self._neighbor_contexts.items()
-        }
 
     def laplacian(self, state: NDArray[np.float64]) -> NDArray[np.float64]:
         """
@@ -308,36 +301,3 @@ class NodeHandle:
         )
 
         return mixed_state
-
-    def combine_maps(
-        self, local_map: dict[str, float], alpha: float = 0.5
-    ) -> dict[str, float]:
-        """
-        Combines the local map with neighbor maps using weighted averaging.
-        This is an experimental feature and may be useful for multi-robot mapping applications.
-
-        Args:
-            local_map (dict[str, float]): A local map to be combined with neighbor maps.
-
-            alpha (float): The weight for neighbor maps in the averaging process. Default is 0.5.
-
-        Returns:
-            dict[str, float]: The combined map after weighted averaging.
-        """
-
-        neighbor_maps = self.exchange_map(local_map)
-
-        new_keys = set(local_map.keys())
-        for neighbor_map in neighbor_maps.values():
-            new_keys = new_keys | neighbor_map.keys()
-
-        combined_map: dict[str, float] = {}
-        for key in new_keys:
-            local_value = local_map.get(key, 0.0)
-            n_values = [n_map.get(key, 0.0) for n_map in neighbor_maps.values()]
-            avg_n_value = sum(n_values) / len(n_values)
-            new_value = (1 - alpha) * local_value + alpha * avg_n_value
-
-            combined_map[key] = new_value
-
-        return combined_map
