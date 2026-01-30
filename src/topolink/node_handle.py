@@ -1,5 +1,5 @@
 from logging import getLogger
-from json import loads, dumps
+from json import loads
 from typing import Callable, KeysView
 from dataclasses import dataclass
 
@@ -85,7 +85,6 @@ class NodeHandle:
 
         self._context = zmq.Context()
         self._reg = self._context.socket(zmq.DEALER)
-        self._reg.setsockopt(zmq.IDENTITY, idx.encode())
 
         self._weight = 1.0
         self._out_socket = self._context.socket(zmq.ROUTER)
@@ -119,21 +118,33 @@ class NodeHandle:
     def weights(self) -> dict[str, float]:
         return {j: nc.weight for j, nc in self._neighbor_contexts.items()}
 
+    def __enter__(self) -> "NodeHandle":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
     def _register_to_graph(self) -> None:
         self._reg.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
-        self._reg.send(self._ip_address.encode() + b":" + str(self._port).encode())
+        idx_bytes = self._idx.encode()
+        endpoint_bytes = self._ip_address.encode() + b":" + str(self._port).encode()
+        self._reg.send_multipart([idx_bytes, endpoint_bytes])
         reply = self._reg.recv()
 
         if reply == b"OK":
             logger.info(f"Node '{self._idx}' joined graph '{self._graph_name}'.")
         elif reply == b"Error: Undefined node":
-            err_msg = f"Undefined node '{self._idx}' tried to join graph '{self._graph_name}'."
+            err_msg = f"Undefined node '{self._idx}' in graph '{self._graph_name}'."
             logger.error(err_msg)
             raise KeyError(err_msg)
-        else:
-            err_msg = f"Node '{self._idx}' failed to join graph '{self._graph_name}': {reply.decode()}."
+        elif reply == b"Error: Node replaced":
+            err_msg = f"Node '{self._idx}' was replaced in graph '{self._graph_name}'."
             logger.error(err_msg)
-            raise ConnectionError(err_msg)
+            raise RuntimeError(err_msg)
+        else:
+            err_msg = f"Unexpected reply: {reply!r}"
+            logger.error(err_msg)
+            raise RuntimeError(err_msg)
 
     def _setup_neighbors(self) -> None:
         message = self._reg.recv()
@@ -163,6 +174,17 @@ class NodeHandle:
                 connected.add(received_name)
 
         logger.info(f"Node '{self._idx}' connected to all neighbors.")
+
+    def close(self) -> None:
+        """
+        Explicitly closes all sockets and terminates the ZeroMQ context.
+        """
+        self._reg.close()
+        self._out_socket.close()
+        for nc in self._neighbor_contexts.values():
+            nc.in_socket.close()
+        self._context.term()
+        logger.info(f"Node '{self._idx}' closed all sockets.")
 
     def neighborwise_exchange(
         self, state_map: dict[str, NDArray[np.float64]]

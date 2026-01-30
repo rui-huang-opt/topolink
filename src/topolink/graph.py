@@ -71,7 +71,11 @@ class Graph:
         self._router, self._port = self._setup_router()
         self._graph_advertiser.register(self._ip_address, self._port)
 
-        self._node_registry: dict[str, str] = {}
+        # idx: (rid: the router identity, endpoint: ip and port of the node)
+        # We do not use the node index as the ROUTER identity, so that multiple
+        # connections with the same idx can be distinguished during registration
+        # (e.g., to properly reject or replace duplicate nodes).
+        self._node_registry: dict[str, tuple[bytes, str]] = {}
 
     @classmethod
     def from_mixing_matrix(
@@ -183,7 +187,7 @@ class Graph:
         neighbor_info_dict: dict[str, NeighborInfo] = {}
         n_i = self.adjacency(i)
         for j in n_i:
-            endpoint = self._node_registry.get(j, "")
+            _, endpoint = self._node_registry.get(j, (b"", ""))
 
             # When the assert fails, it indicates a bug in the deployment logic.
             assert endpoint, f"Node '{j}' has not registered."
@@ -203,17 +207,24 @@ class Graph:
 
     def _register_nodes(self) -> None:
         while len(self._node_registry) < self.number_of_nodes:
-            idx_bytes, endpoint_bytes = self._router.recv_multipart()
+            rid, idx_bytes, endpoint_bytes = self._router.recv_multipart()
             idx = idx_bytes.decode()
 
             if idx not in self.nodes:
-                self._router.send_multipart([idx_bytes, b"Error: Undefined node"])
+                self._router.send_multipart([rid, b"Error: Undefined node"])
                 continue
 
+            if idx in self._node_registry:
+                old_rid, _ = self._node_registry[idx]
+                self._router.send_multipart([old_rid, b"Error: Node replaced"])
+
             endpoint = endpoint_bytes.decode()
-            self._node_registry[idx] = endpoint
+            self._node_registry[idx] = (rid, endpoint)
             logger.info(f"Node '{idx}' joined graph '{self._name}' from {endpoint}.")
-            self._router.send_multipart([idx_bytes, b"OK"])
+
+        for idx in self._node_registry:
+            rid, _ = self._node_registry[idx]
+            self._router.send_multipart([rid, b"OK"])
 
         logger.info(f"Graph '{self._name}' registration complete.")
 
@@ -221,7 +232,8 @@ class Graph:
         for i in self.nodes:
             neighbor_info_dict = self._get_neighbor_info_dict(i)
             messages = dumps(neighbor_info_dict).encode()
-            self._router.send_multipart([i.encode(), messages])
+            rid, _ = self._node_registry[i]
+            self._router.send_multipart([rid, messages])
 
         logger.info(f"Sent neighbor information to all nodes in graph '{self._name}'.")
 
