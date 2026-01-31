@@ -64,7 +64,13 @@ class Quantize:
         min_val = np.iinfo(dtype_).min
         max_val = np.iinfo(dtype_).max
 
-        scale = np.percentile(np.abs(state), self.percentile) / max_val
+        abs_state = np.abs(state)
+        nonzero = abs_state[abs_state > 0]
+        if nonzero.size == 0:
+            scale = 1.0
+        else:
+            scale = np.percentile(nonzero, self.percentile) / max_val
+
         scaled_state = state / scale
         rounded_state = np.round(scaled_state)
         clipped_state = np.clip(rounded_state, min_val, max_val)
