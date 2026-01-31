@@ -55,15 +55,16 @@ class Quantize:
         The scale factor for quantization.
     """
 
-    def __init__(self, dtype: str = "int8"):
+    def __init__(self, dtype: str = "int8", percentile: float = 99.0):
         self.dtype = dtype
+        self.percentile = percentile
 
     def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.number]]:
         dtype_ = np.dtype(self.dtype)
         min_val = np.iinfo(dtype_).min
         max_val = np.iinfo(dtype_).max
 
-        scale: float = np.max(np.abs(state)) / max_val
+        scale = np.percentile(np.abs(state), self.percentile) / max_val
         scaled_state = state / scale
         rounded_state = np.round(scaled_state)
         clipped_state = np.clip(rounded_state, min_val, max_val)
