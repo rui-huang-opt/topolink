@@ -47,6 +47,10 @@ class NodeHandle:
         The Transform interface consists of `encode` and `decode` methods for serializing and deserializing state data.
         Typical transforms may include quantization, perturbation for privacy.
 
+    transport : Literal["tcp", "ipc"], optional
+        The transport type for ZeroMQ communication (default is "tcp").
+        "ipc" is recommended for local multi-process communication on the same machine for better performance.
+
     Attributes
     ----------
     idx : str

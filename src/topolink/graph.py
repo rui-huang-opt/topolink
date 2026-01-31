@@ -30,6 +30,10 @@ class Graph:
     name : str, optional
         The name of the graph service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
 
+    transport : Literal["tcp", "ipc"], optional
+        The transport type for ZeroMQ communication (default is "tcp").
+        "ipc" is recommended for local multi-process communication on the same machine for better performance.
+
     Attributes
     ----------
     nodes : NodeView
