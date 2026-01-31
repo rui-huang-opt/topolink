@@ -47,3 +47,44 @@ def is_symmetric_doubly_stochastic(matrix: NDArray[float64]) -> bool:
         return False
 
     return allclose(np.sum(matrix, axis=0), 1.0)
+
+
+import sys
+import warnings
+from typing import Literal
+
+
+def normalize_transport(transport: Literal["tcp", "ipc"]) -> Literal["tcp", "ipc"]:
+    """
+    Normalize the transport type based on the operating system.
+
+    Parameters
+    ----------
+    transport : Literal["tcp", "ipc"]
+        The desired transport type.
+
+    Returns
+    -------
+    Literal["tcp", "ipc"]
+        The normalized transport type.
+
+    Raises
+    ------
+    ValueError
+        If the transport type is unsupported.
+    """
+    supported_transports = {"tcp", "ipc"}
+    if transport not in supported_transports:
+        err_msg = f"Unsupported transport type: {transport}. Supported types are: {supported_transports}"
+        raise ValueError(err_msg)
+
+    is_linux = sys.platform.startswith("linux")
+    if is_linux:
+        return transport
+    else:
+        warn_msg = (
+            "IPC transport is only supported on Linux systems. "
+            "Falling back to TCP transport."
+        )
+        warnings.warn(warn_msg)
+        return "tcp"

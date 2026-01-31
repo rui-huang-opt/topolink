@@ -1,5 +1,7 @@
+import sys
 from logging import getLogger
 from json import dumps
+from typing import Literal
 
 import numpy as np
 import networkx as nx
@@ -7,7 +9,7 @@ import zmq
 from numpy.typing import NDArray
 
 from .types import NodeInput, EdgeInput, NodeView, EdgeView, AdjView, NeighborInfo
-from .utils import get_local_ip, is_symmetric_doubly_stochastic
+from .utils import get_local_ip, is_symmetric_doubly_stochastic, normalize_transport
 from .discovery import GraphAdvertiser
 
 logger = getLogger("topolink.graph")
@@ -57,6 +59,7 @@ class Graph:
         nodes: NodeInput | None = None,
         edges: EdgeInput | None = None,
         name: str = "default",
+        transport: Literal["tcp", "ipc"] = "tcp",
     ) -> None:
         self._nx_graph = nx.Graph()
         self._nx_graph.add_nodes_from(nodes or [])
@@ -65,11 +68,10 @@ class Graph:
         self._context = zmq.Context()
 
         self._name = name
+        self._transport = normalize_transport(transport)
 
-        self._graph_advertiser = GraphAdvertiser(name)
-        self._ip_address = get_local_ip()
-        self._router, self._port = self._setup_router()
-        self._graph_advertiser.register(self._ip_address, self._port)
+        self._router = self._context.socket(zmq.ROUTER)
+        self._setup_router()
 
         # idx: (rid: the router identity, endpoint: ip and port of the node)
         # We do not use the node index as the ROUTER identity, so that multiple
@@ -83,6 +85,7 @@ class Graph:
         mixing_matrix: NDArray[np.float64],
         nodelist: list[str] | None = None,
         name: str = "default",
+        transport: Literal["tcp", "ipc"] = "tcp",
     ) -> "Graph":
         """
         Create a Graph instance from a mixing matrix.
@@ -117,7 +120,7 @@ class Graph:
 
         nx_graph = nx.relabel_nodes(nx_graph, mapping)
 
-        graph = cls(name=name)
+        graph = cls(name=name, transport=transport)
         graph._nx_graph = nx_graph
 
         return graph
@@ -198,12 +201,19 @@ class Graph:
 
         return neighbor_info_dict
 
-    def _setup_router(self) -> tuple[zmq.Socket, int]:
-        router = self._context.socket(zmq.ROUTER)
-        port = router.bind_to_random_port("tcp://*")
-        logger.info(f"Graph '{self._name}' running on: {self._ip_address}:{port}")
-
-        return router, port
+    def _setup_router(self) -> None:
+        if self._transport == "tcp":
+            self._graph_advertiser = GraphAdvertiser(self._name)
+            ip_address = get_local_ip()
+            port = self._router.bind_to_random_port("tcp://*")
+            logger.info(f"Graph '{self._name}' running on: {ip_address}:{port}")
+            self._graph_advertiser.register(ip_address, port)
+        elif self._transport == "ipc":
+            self._router.bind(f"ipc://@topolink-graph-{self._name}")
+        else:
+            err_msg = f"Unsupported transport type: {self._transport}"
+            logger.error(err_msg)
+            raise ValueError(err_msg)
 
     def _register_nodes(self) -> None:
         while len(self._node_registry) < self.number_of_nodes:
@@ -264,4 +274,5 @@ class Graph:
         finally:
             self._router.close()
             self._context.term()
-            self._graph_advertiser.unregister()
+            if self._transport == "tcp":
+                self._graph_advertiser.unregister()

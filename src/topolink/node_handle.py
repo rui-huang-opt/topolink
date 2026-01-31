@@ -1,6 +1,6 @@
 from logging import getLogger
 from json import loads
-from typing import Callable, KeysView
+from typing import KeysView, Literal
 from dataclasses import dataclass
 
 import numpy as np
@@ -8,7 +8,7 @@ import zmq
 from numpy.typing import NDArray
 
 from .types import NeighborInfo
-from .utils import get_local_ip
+from .utils import get_local_ip, normalize_transport
 from .discovery import discover_graph
 from .transform import Transform, Identity
 
@@ -72,27 +72,19 @@ class NodeHandle:
         idx: str,
         graph_name: str = "default",
         transform: Transform | None = None,
+        transport: Literal["tcp", "ipc"] = "tcp",
     ) -> None:
         self._idx = idx
         self._graph_name = graph_name
         self._transform = transform or Identity()
-
-        endpoint = discover_graph(graph_name)
-
-        if endpoint is None:
-            err_msg = f"Timeout: Node '{idx}' can't discover graph '{graph_name}'."
-            logger.error(err_msg)
-            raise ConnectionError(err_msg)
-
-        self._graph_ip_addr, self._graph_port = endpoint
+        self._transport = normalize_transport(transport)
 
         self._context = zmq.Context()
         self._reg = self._context.socket(zmq.DEALER)
-
         self._weight = 1.0
         self._out_socket = self._context.socket(zmq.ROUTER)
-        self._ip_address = get_local_ip()
-        self._port = self._out_socket.bind_to_random_port("tcp://*")
+
+        self._graph_endpoint, self._endpoint = self._setup_endpoint()
 
         self._neighbor_contexts: dict[str, NeighborContext] = {}
 
@@ -127,10 +119,35 @@ class NodeHandle:
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self.close()
 
+    def _setup_endpoint(self) -> tuple[str, str]:
+        if self._transport == "tcp":
+            graph_info = discover_graph(self._graph_name)
+
+            if graph_info is None:
+                err_msg = f"Timeout: Node '{self._idx}' can't discover graph '{self._graph_name}'."
+                logger.error(err_msg)
+                raise ConnectionError(err_msg)
+
+            graph_endpoint = f"{graph_info[0]}:{graph_info[1]}"
+
+            ip_address = get_local_ip()
+            port = self._out_socket.bind_to_random_port(f"tcp://{ip_address}")
+            endpoint = f"{ip_address}:{port}"
+        elif self._transport == "ipc":
+            graph_endpoint = f"@topolink-graph-{self._graph_name}"
+            self._out_socket.bind(f"ipc://@topolink-{self._graph_name}-{self._idx}")
+            endpoint = f"@topolink-{self._graph_name}-{self._idx}"
+        else:
+            err_msg = f"Unsupported transport type: {self._transport}"
+            logger.error(err_msg)
+            raise ValueError(err_msg)
+
+        return graph_endpoint, endpoint
+
     def _register_to_graph(self) -> None:
-        self._reg.connect(f"tcp://{self._graph_ip_addr}:{self._graph_port}")
+        self._reg.connect(f"{self._transport}://{self._graph_endpoint}")
         idx_bytes = self._idx.encode()
-        endpoint_bytes = self._ip_address.encode() + b":" + str(self._port).encode()
+        endpoint_bytes = self._endpoint.encode()
         self._reg.send_multipart([idx_bytes, endpoint_bytes])
         reply = self._reg.recv()
 
@@ -164,7 +181,7 @@ class NodeHandle:
     def _connect_to_neighbors(self) -> None:
         for nc in self._neighbor_contexts.values():
             nc.in_socket.setsockopt(zmq.IDENTITY, self._idx.encode())
-            nc.in_socket.connect(f"tcp://{nc.endpoint}")
+            nc.in_socket.connect(f"{self._transport}://{nc.endpoint}")
 
         for nc in self._neighbor_contexts.values():
             nc.in_socket.send(b"")
