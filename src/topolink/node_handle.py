@@ -10,6 +10,7 @@ from numpy.typing import NDArray
 from .types import NeighborInfo
 from .utils import get_local_ip
 from .discovery import discover_graph
+from .transform import Transform, Identity
 
 
 logger = getLogger(f"topolink.node_handle")
@@ -40,9 +41,11 @@ class NodeHandle:
     graph_name : str, optional
         Name of the graph to connect to (default is "default"). This should match the name used during graph creation.
 
-    mask : Callable[[NDArray[float64]], NDArray[np.number]], optional
-        A function to apply to the state before sending it to neighbors (default is identity function).
-        This can be used to add noise, apply privacy mechanisms, or modify the state in other ways.
+    transform : Transform | None, optional
+        An optional Transform instance for encoding and decoding state data during communication.
+        If None, the Identity transform is used, which performs no transformation.
+        The Transform interface consists of `encode` and `decode` methods for serializing and deserializing state data.
+        Typical transforms may include quantization, perturbation for privacy.
 
     Attributes
     ----------
@@ -68,11 +71,11 @@ class NodeHandle:
         self,
         idx: str,
         graph_name: str = "default",
-        mask: Callable[[NDArray[np.float64]], NDArray[np.number]] = lambda x: x,
+        transform: Transform | None = None,
     ) -> None:
         self._idx = idx
         self._graph_name = graph_name
-        self._mask = mask
+        self._transform = transform or Identity()
 
         endpoint = discover_graph(graph_name)
 
@@ -209,17 +212,15 @@ class NodeHandle:
 
         for j in self._neighbor_contexts:
             state = state_map[j]
-            masked_state = np.ascontiguousarray(self._mask(state))
-            dtype_bytes = masked_state.dtype.str.encode()
-            msgs = [j.encode(), dtype_bytes, masked_state]
+            meta, payload = self._transform.encode(state)
+            payload = np.ascontiguousarray(payload)
+            msgs = [j.encode(), meta, payload]
             self._out_socket.send_multipart(msgs, copy=False)
 
         neighbor_states: dict[str, NDArray[np.float64]] = {}
         for j, nc in self._neighbor_contexts.items():
-            _dtype_bytes, state_bytes = nc.in_socket.recv_multipart()
-            dtype = np.dtype(_dtype_bytes.decode())
-            raw_state = np.frombuffer(state_bytes, dtype=dtype)
-            neighbor_states[j] = raw_state.astype(np.float64, copy=False)
+            meta, payload = nc.in_socket.recv_multipart()
+            neighbor_states[j] = self._transform.decode(meta, payload)
 
         return neighbor_states
 
@@ -235,18 +236,16 @@ class NodeHandle:
         Returns:
             dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
-        masked_state = np.ascontiguousarray(self._mask(state))
-        dtype_bytes = masked_state.dtype.str.encode()
+        meta, payload = self._transform.encode(state)
+        payload = np.ascontiguousarray(payload)
         for j_bytes in self._neighbor_idx_bytes:
-            msgs = [j_bytes, dtype_bytes, masked_state]
+            msgs = [j_bytes, meta, payload]
             self._out_socket.send_multipart(msgs, copy=False)
 
         neighbor_states: dict[str, NDArray[np.float64]] = {}
         for j, nc in self._neighbor_contexts.items():
-            _dtype_bytes, state_bytes = nc.in_socket.recv_multipart()
-            dtype = np.dtype(_dtype_bytes.decode())
-            raw_state = np.frombuffer(state_bytes, dtype=dtype)
-            neighbor_states[j] = raw_state.astype(np.float64, copy=False)
+            meta, payload = nc.in_socket.recv_multipart()
+            neighbor_states[j] = self._transform.decode(meta, payload)
 
         return neighbor_states
 
@@ -263,18 +262,16 @@ class NodeHandle:
         Returns:
             NDArray[np.float64]: A 2D array where each row corresponds to a neighbor's received state array.
         """
-        masked_state = np.ascontiguousarray(self._mask(state))
-        dtype_bytes = masked_state.dtype.str.encode()
+        meta, payload = self._transform.encode(state)
+        payload = np.ascontiguousarray(payload)
         for j_bytes in self._neighbor_idx_bytes:
-            msgs = [j_bytes, dtype_bytes, masked_state]
+            msgs = [j_bytes, meta, payload]
             self._out_socket.send_multipart(msgs, copy=False)
 
         neighbor_states: list[NDArray[np.float64]] = []
         for nc in self._neighbor_contexts.values():
-            _dtype_bytes, state_bytes = nc.in_socket.recv_multipart()
-            dtype = np.dtype(_dtype_bytes.decode())
-            raw_state = np.frombuffer(state_bytes, dtype=dtype)
-            neighbor_states.append(raw_state.astype(np.float64, copy=False))
+            meta, payload = nc.in_socket.recv_multipart()
+            neighbor_states.append(self._transform.decode(meta, payload))
 
         return np.stack(neighbor_states, axis=0)
 
@@ -318,8 +315,7 @@ class NodeHandle:
         neighbor_states = self.exchange(state)
         nc = self._neighbor_contexts
         mixed_state = state * self._weight + sum(
-            neighbor_state * nc[j].weight
-            for j, neighbor_state in neighbor_states.items()
+            n_state * nc[j].weight for j, n_state in neighbor_states.items()
         )
 
         return mixed_state
