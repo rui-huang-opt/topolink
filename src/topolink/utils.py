@@ -51,21 +51,20 @@ def is_symmetric_doubly_stochastic(matrix: NDArray[float64]) -> bool:
 
 import sys
 import warnings
-from typing import Literal
 
 
-def normalize_transport(transport: Literal["tcp", "ipc"]) -> Literal["tcp", "ipc"]:
+def normalize_transport(transport: str) -> str:
     """
     Normalize the transport type based on the operating system.
 
     Parameters
     ----------
-    transport : Literal["tcp", "ipc"]
+    transport : str
         The desired transport type.
 
     Returns
     -------
-    Literal["tcp", "ipc"]
+    str
         The normalized transport type.
 
     Raises

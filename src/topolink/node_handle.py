@@ -203,10 +203,10 @@ class NodeHandle:
         """
         Explicitly closes all sockets and terminates the ZeroMQ context.
         """
-        self._reg.close()
-        self._out_socket.close()
+        self._reg.close(linger=0)
+        self._out_socket.close(linger=0)
         for nc in self._neighbor_contexts.values():
-            nc.in_socket.close()
+            nc.in_socket.close(linger=0)
         self._context.term()
         logger.info(f"Node '{self._idx}' closed all sockets.")
 
