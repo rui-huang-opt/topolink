@@ -1,14 +1,13 @@
-import sys
 from logging import getLogger
 from json import dumps
-from typing import Literal
+from typing import Literal, KeysView
+from collections import deque
 
-import numpy as np
-import networkx as nx
 import zmq
+import numpy as np
 from numpy.typing import NDArray
 
-from .types import NodeInput, EdgeInput, NodeView, EdgeView, AdjView, NeighborInfo
+from .types import NeighborInfo
 from .utils import get_local_ip, is_symmetric_doubly_stochastic, normalize_transport
 from .discovery import GraphAdvertiser
 
@@ -17,15 +16,15 @@ logger = getLogger("topolink.graph")
 
 class Graph:
     """
-    Represents a network topology using a NetworkX graph and provides methods for managing nodes, edges, and network deployment.
+    Represents a network topology graph for distributed nodes.
 
     Parameters
     ----------
-    nodes : NodeInput | None, optional
-        An iterable of node names to initialize the graph. If None, the graph starts empty.
+    nodes : list[str] | None, optional
+        An iterable of node names to initialize the graph. If None, the graph starts with no nodes.
 
-    edges : EdgeInput | None, optional
-        An iterable of edges (tuples of node names) to initialize the graph. If None, the graph starts with no edges.
+    edges : list[tuple[str, str]] | None, optional
+        An iterable of edges represented as tuples of node names (u, v). If None, the graph starts with no edges.
 
     name : str, optional
         The name of the graph service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
@@ -36,20 +35,14 @@ class Graph:
 
     Attributes
     ----------
-    nodes : NodeView
-        A view of the nodes in the graph.
-
-    edges : EdgeView
-        A view of the edges in the graph.
+    nodes : KeysView[str]
+        A view of the node names in the graph.
 
     number_of_nodes : int
-        The number of nodes in the graph.
+        The total number of nodes in the graph.
 
-    number_of_edges : int
-        The number of edges in the graph.
-
-    is_connected : bool
-        Indicates whether the graph is connected.
+    adjacency : dict[str, dict[str, float]]
+        The adjacency representation of the graph, where each key is a node name and the value is a dictionary of neighboring nodes and their edge weights.
 
     Notes
     -----
@@ -60,14 +53,23 @@ class Graph:
 
     def __init__(
         self,
-        nodes: NodeInput | None = None,
-        edges: EdgeInput | None = None,
+        nodes: list[str] | None = None,
+        edges: list[tuple[str, str]] | None = None,
         name: str = "default",
         transport: Literal["tcp", "ipc"] = "tcp",
     ) -> None:
-        self._nx_graph = nx.Graph()
-        self._nx_graph.add_nodes_from(nodes or [])
-        self._nx_graph.add_edges_from(edges or [])
+        nodes_ = nodes or []
+        edges_ = edges or []
+        self._adj: dict[str, dict[str, NeighborInfo]] = {u: {} for u in nodes_}
+
+        for u, v in edges_:
+            if u not in self._adj:
+                self._adj[u] = {}
+            if v not in self._adj:
+                self._adj[v] = {}
+
+            self._adj[u][v] = NeighborInfo(weight=1.0, endpoint="")
+            self._adj[v][u] = NeighborInfo(weight=1.0, endpoint="")
 
         self._context = zmq.Context()
 
@@ -87,7 +89,7 @@ class Graph:
     def from_mixing_matrix(
         cls,
         mixing_matrix: NDArray[np.float64],
-        nodelist: list[str] | None = None,
+        nodes: list[str] | None = None,
         name: str = "default",
         transport: Literal["tcp", "ipc"] = "tcp",
     ) -> "Graph":
@@ -100,7 +102,7 @@ class Graph:
         mixing_matrix : NDArray[float64]
             A square matrix representing the mixing coefficients between nodes.
 
-        nodelist : list[str], optional
+        nodes : list[str], optional
             A list of self defined node names. If not provided, nodes will be named sequentially as "1", "2", ..., "n".
         """
         if not is_symmetric_doubly_stochastic(mixing_matrix):
@@ -108,102 +110,69 @@ class Graph:
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        mixing_matrix_no_self = mixing_matrix.copy()
-        np.fill_diagonal(mixing_matrix_no_self, 0.0)
-        nx_graph = nx.from_numpy_array(mixing_matrix_no_self, create_using=nx.Graph)
+        n = len(mixing_matrix)
 
-        if nodelist is None:
-            n = mixing_matrix.shape[0]
-            mapping = {i: str(i + 1) for i in range(n)}
-        elif len(nodelist) == mixing_matrix.shape[0]:
-            mapping = {i: nodelist[i] for i in range(mixing_matrix.shape[0])}
-        else:
-            err_msg = "Length of nodelist must match the size of the mixing matrix."
+        if nodes is None:
+            nodes = [str(i + 1) for i in range(n)]
+        elif len(nodes) != n:
+            err_msg = "The length of nodes must match the size of the mixing matrix."
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        nx_graph = nx.relabel_nodes(nx_graph, mapping)
+        adj: dict[str, dict[str, NeighborInfo]] = {u: {} for u in nodes}
+
+        nz_rows, nz_cols = np.nonzero(mixing_matrix)
+        mask = nz_rows < nz_cols
+
+        for i, j in zip(nz_rows[mask], nz_cols[mask]):
+            weight = mixing_matrix[i, j].item()
+            u = nodes[i]
+            v = nodes[j]
+            adj[u][v] = NeighborInfo(weight=weight, endpoint="")
+            adj[v][u] = NeighborInfo(weight=weight, endpoint="")
 
         graph = cls(name=name, transport=transport)
-        graph._nx_graph = nx_graph
+        graph._adj = adj
 
         return graph
 
     @property
-    def nodes(self) -> NodeView:
-        return self._nx_graph.nodes
-
-    @property
-    def edges(self) -> EdgeView:
-        return self._nx_graph.edges
+    def nodes(self) -> KeysView[str]:
+        return self._adj.keys()
 
     @property
     def number_of_nodes(self) -> int:
-        return self._nx_graph.number_of_nodes()
+        return len(self._adj)
 
     @property
-    def number_of_edges(self) -> int:
-        return self._nx_graph.number_of_edges()
+    def adjacency(self) -> dict[str, dict[str, NeighborInfo]]:
+        return self._adj
 
-    @property
     def is_connected(self) -> bool:
-        return nx.is_connected(self._nx_graph)
-
-    def add_nodes(self, nodes: NodeInput) -> None:
         """
-        Add nodes to the graph.
-
-        Parameters
-        ----------
-        nodes : NodeInput
-            An iterable of node names to add to the graph.
-        """
-        self._nx_graph.add_nodes_from(nodes)
-
-    def add_edges(self, edges: EdgeInput) -> None:
-        """
-        Add edges to the graph.
-
-        Parameters
-        ----------
-        edges : EdgeInput
-            An iterable of edges (tuples of node names) to add to the graph.
-        """
-        self._nx_graph.add_edges_from(edges)
-
-    def adjacency(self, i: str) -> AdjView:
-        """
-        Get the adjacency view of a specific node i.
-
-        Parameters
-        ----------
-        i : str
-            The name of the node.
+        Check if the graph is connected.
 
         Returns
         -------
-        AdjView
-            The adjacency view of the specified node.
+        bool
+            True if the graph is connected, False otherwise.
         """
-        return self._nx_graph[i]
+        if not self._adj:
+            return True
 
-    def _get_neighbor_info_dict(self, i: str) -> dict[str, NeighborInfo]:
-        # When the assert fails, it indicates a bug in the deployment logic.
-        assert i in self.nodes, f"Node '{i}' is not defined in the graph."
+        start = next(iter(self._adj))
+        visited = {start}
 
-        neighbor_info_dict: dict[str, NeighborInfo] = {}
-        n_i = self.adjacency(i)
-        for j in n_i:
-            _, endpoint = self._node_registry.get(j, (b"", ""))
+        q = deque([start])
 
-            # When the assert fails, it indicates a bug in the deployment logic.
-            assert endpoint, f"Node '{j}' has not registered."
+        while q:
+            u = q.popleft()
+            for v in self._adj[u]:
+                if v not in visited:
+                    visited.add(v)
+                    q.append(v)
 
-            weight = n_i[j].get("weight", 1.0)
-            info = NeighborInfo(endpoint=endpoint, weight=weight)
-            neighbor_info_dict[j] = info
-
-        return neighbor_info_dict
+        return len(visited) == len(self._adj)
 
     def _setup_router(self) -> None:
         if self._transport == "tcp":
@@ -243,9 +212,15 @@ class Graph:
         logger.info(f"Graph '{self._name}' registration complete.")
 
     def _notify_nodes_of_neighbors(self) -> None:
+        for i in self._adj:
+            neighbors = self._adj[i]
+            for j in neighbors:
+                _, endpoint = self._node_registry[j]
+                self._adj[i][j]["endpoint"] = endpoint
+
         for i in self.nodes:
-            neighbor_info_dict = self._get_neighbor_info_dict(i)
-            messages = dumps(neighbor_info_dict).encode()
+            neighbors = self._adj[i]
+            messages = dumps(neighbors).encode()
             rid, _ = self._node_registry[i]
             self._router.send_multipart([rid, messages])
 
@@ -267,7 +242,7 @@ class Graph:
             If the graph is not connected.
         """
         try:
-            if not self.is_connected:
+            if not self.is_connected():
                 err_msg = "The graph is not connected."
                 logger.error(err_msg)
                 raise ValueError(err_msg)
