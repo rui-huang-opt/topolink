@@ -1,4 +1,0 @@
-# run.sh is an environment-specific helper script for launching nodes via SSH
-# (depends on local hostnames, users and SSH configuration), so it is not tracked.
-run.sh
-logs/
