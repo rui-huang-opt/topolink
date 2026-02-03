@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 requires-python = ">=3.10"
 name = "topolink"
-version = "0.4.1"
+version = "0.4.2"
 license = { text = "MIT" }
 description = "A Python package for deploying distributed undirected network topologies on a set of nodes."
 authors = [{ name = "Rui Huang", email = "ruihuang0421@gmail.com" }]
@@ -15,6 +15,7 @@ dependencies = ["numpy>=2.2.6", "pyzmq>=27.0.0", "zeroconf>=0.148.0"]
 [project.optional-dependencies]
 notebook = ["ipykernel>=6.29.5"]
 examples = ["matplotlib>=3.10.3", "networkx>=3.4.2"]
+multi_node = ["dask[distributed]>=2026.1.2"]
 
 [tool.setuptools.packages.find]
 where = ["src"]
