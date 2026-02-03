@@ -104,7 +104,7 @@ class BootstrapService:
                 self._graph_advertiser.unregister()
 
 
-def bootstrap(*graphs: Graph) -> zmq.Context[zmq.Socket]:
+def bootstrap(*graphs: Graph) -> None:
     """
     Bootstrap the given graph by starting the bootstrap service in a separate thread.
 
@@ -121,11 +121,11 @@ def bootstrap(*graphs: Graph) -> zmq.Context[zmq.Socket]:
     """
     context = zmq.Context()
     services = [BootstrapService(context, graph) for graph in graphs]
-    bootstrap_threads = [Thread(target=s.apply, daemon=True) for s in services]
+    bootstrap_threads = [Thread(target=s.apply) for s in services]
     for t in bootstrap_threads:
         t.start()
 
-    # We don't term the context here because the bootstrap services run in daemon threads.
-    # The context will be left to be cleaned up by the main program upon exit.
+    for t in bootstrap_threads:
+        t.join()
 
-    return context
+    context.term()
