@@ -107,6 +107,8 @@ class BootstrapService:
 def bootstrap(*graphs: Graph) -> None:
     """
     Bootstrap the given graph by starting the bootstrap service in a separate thread.
+    The first graph is bootstrapped in the main thread, while additional graphs
+    are bootstrapped in separate threads.
 
     Parameters
     ----------
@@ -119,13 +121,22 @@ def bootstrap(*graphs: Graph) -> None:
         The ZeroMQ context used by the bootstrap service.
         Returns this to let the caller manage its lifecycle.
     """
+    if not graphs:
+        err_msg = "At least one graph must be provided for bootstrapping."
+        logger.error(err_msg)
+        raise ValueError(err_msg)
+
     context = zmq.Context()
-    services = [BootstrapService(context, graph) for graph in graphs]
-    bootstrap_threads = [Thread(target=s.apply) for s in services]
-    for t in bootstrap_threads:
-        t.start()
+    try:
+        services = [BootstrapService(context, graph) for graph in graphs[1:]]
+        bootstrap_threads = [Thread(target=s.apply) for s in services]
+        for t in bootstrap_threads:
+            t.start()
 
-    for t in bootstrap_threads:
-        t.join()
+        BootstrapService(context, graphs[0]).apply()
 
-    context.term()
+        for t in bootstrap_threads:
+            t.join()
+
+    finally:
+        context.term()
