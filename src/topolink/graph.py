@@ -32,6 +32,9 @@ class Graph:
 
     Attributes
     ----------
+    name : str
+        The name of the graph service.
+
     nodes : KeysView[str]
         A view of the node names in the graph.
 
@@ -43,6 +46,7 @@ class Graph:
 
     transport : str
         The transport type used for communication.
+        Note that "ipc" is only supported for Linux systems.
 
     adjacency : dict[str, dict[str, NeighborInfo]]
         The adjacency representation of the graph, where each key is a node name, and the value is a dictionary mapping neighboring node names to their NeighborInfo.
@@ -147,6 +151,10 @@ class Graph:
     @property
     def transport(self) -> str:
         return self._transport
+
+    @transport.setter
+    def transport(self, value: Literal["tcp", "ipc"]) -> None:
+        self._transport = normalize_transport(value)
 
     @property
     def adjacency(self) -> dict[str, dict[str, NeighborInfo]]:
