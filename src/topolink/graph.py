@@ -73,7 +73,7 @@ class Graph:
             self._adj[u][v] = NeighborInfo(weight=1.0, endpoint="")
             self._adj[v][u] = NeighborInfo(weight=1.0, endpoint="")
 
-        self._name = name
+        self.name = name
         self._transport = normalize_transport(transport)
 
     @classmethod
@@ -126,10 +126,6 @@ class Graph:
         graph._adj = adj
 
         return graph
-
-    @property
-    def name(self) -> str:
-        return self._name
 
     @property
     def nodes(self) -> KeysView[str]:
