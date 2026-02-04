@@ -126,17 +126,9 @@ def bootstrap(*graphs: Graph) -> None:
         logger.error(err_msg)
         raise ValueError(err_msg)
 
-    context = zmq.Context()
-    try:
-        services = [BootstrapService(context, graph) for graph in graphs[1:]]
-        bootstrap_threads = [Thread(target=s.apply) for s in services]
-        for t in bootstrap_threads:
-            t.start()
+    context = zmq.Context().instance()
 
-        BootstrapService(context, graphs[0]).apply()
-
-        for t in bootstrap_threads:
-            t.join()
-
-    finally:
-        context.term()
+    services = [BootstrapService(context, graph) for graph in graphs]
+    bootstrap_threads = [Thread(target=s.apply) for s in services]
+    for t in bootstrap_threads:
+        t.start()
