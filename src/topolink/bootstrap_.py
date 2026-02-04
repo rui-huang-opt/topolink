@@ -1,6 +1,6 @@
-from logging import getLogger
-from json import dumps
-from threading import Thread
+import logging
+import json
+import threading
 
 import zmq
 
@@ -8,7 +8,7 @@ from .graph import Graph
 from .utils import get_local_ip
 from .discovery import GraphAdvertiser
 
-logger = getLogger("topolink.graph")
+logger = logging.getLogger("topolink.graph")
 
 
 class BootstrapService:
@@ -29,7 +29,7 @@ class BootstrapService:
         if self._graph.transport == "tcp":
             self._graph_advertiser = GraphAdvertiser(self._graph.name)
             ip_address = get_local_ip()
-            port = router.bind_to_random_port("tcp://*")
+            port = router.bind_to_random_port(f"tcp://{ip_address}")
             logger.info(f"Graph '{self._graph.name}' running on: {ip_address}:{port}")
             self._graph_advertiser.register(ip_address, port)
 
@@ -78,7 +78,7 @@ class BootstrapService:
                 adj[i][j]["endpoint"] = endpoint
 
         for i, neighbors in adj.items():
-            messages = dumps(neighbors).encode()
+            messages = json.dumps(neighbors).encode()
             rid, _ = self._node_registry[i]
             router.send_multipart([rid, messages])
 
@@ -129,6 +129,6 @@ def bootstrap(*graphs: Graph) -> None:
     context = zmq.Context().instance()
 
     services = [BootstrapService(context, graph) for graph in graphs]
-    bootstrap_threads = [Thread(target=s.apply) for s in services]
+    bootstrap_threads = [threading.Thread(target=s.apply) for s in services]
     for t in bootstrap_threads:
         t.start()
