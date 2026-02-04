@@ -1,6 +1,6 @@
-import logging
-import json
-import threading
+from logging import getLogger
+from json import dumps
+from threading import Thread
 
 import zmq
 
@@ -8,7 +8,7 @@ from .graph import Graph
 from .utils import get_local_ip
 from .discovery import GraphAdvertiser
 
-logger = logging.getLogger("topolink.graph")
+logger = getLogger("topolink.graph")
 
 
 class BootstrapService:
@@ -78,7 +78,7 @@ class BootstrapService:
                 adj[i][j]["endpoint"] = endpoint
 
         for i, neighbors in adj.items():
-            messages = json.dumps(neighbors).encode()
+            messages = dumps(neighbors).encode()
             rid, _ = self._node_registry[i]
             router.send_multipart([rid, messages])
 
@@ -115,11 +115,10 @@ def bootstrap(*graphs: Graph) -> None:
     graph : Graph
         The graph to bootstrap.
 
-    Returns
-    -------
-    context : zmq.Context
-        The ZeroMQ context used by the bootstrap service.
-        Returns this to let the caller manage its lifecycle.
+    Raises
+    ------
+    ValueError
+        If no graphs are provided.
     """
     if not graphs:
         err_msg = "At least one graph must be provided for bootstrapping."
@@ -129,6 +128,6 @@ def bootstrap(*graphs: Graph) -> None:
     context = zmq.Context().instance()
 
     services = [BootstrapService(context, graph) for graph in graphs]
-    bootstrap_threads = [threading.Thread(target=s.apply) for s in services]
+    bootstrap_threads = [Thread(target=s.apply, daemon=True) for s in services]
     for t in bootstrap_threads:
         t.start()
