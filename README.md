@@ -108,7 +108,7 @@ where $\alpha > 0$ is the step size parameter. In each iteration, nodes only exc
 
 ```python
 # On the master (graph coordinator) machine
-from topolink import Graph
+from topolink import Graph, bootstrap
 
 nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
@@ -116,8 +116,8 @@ edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 # Create the graph object
 ring = Graph(nodes, edges)
 
-# Start the graph to coordinate node joining
-ring.deploy()
+# Bootstrap the ring to allow nodes to join
+bootstrap(ring)
 ```
 
 #### **Node Side: Join the Network**
