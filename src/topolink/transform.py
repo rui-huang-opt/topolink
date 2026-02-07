@@ -78,7 +78,7 @@ class Quantize:
         scaled_state = state / scale
         rounded_state = np.round(scaled_state)
         clipped_state = np.clip(rounded_state, min_val, max_val)
-        quantized_state = clipped_state.astype(dtype_)
+        quantized_state = clipped_state.astype(dtype_, copy=False)
 
         meta = json.dumps({"scale": scale, "dtype": self.dtype}).encode()
         return meta, quantized_state
@@ -88,7 +88,7 @@ class Quantize:
         dtype = np.dtype(meta_dict["dtype"])
         scale = meta_dict["scale"]
         quantized_state = np.frombuffer(payload, dtype=dtype)
-        return quantized_state.astype(np.float64) * scale
+        return quantized_state.astype(np.float64, copy=False) * scale
 
 
 class DPMechanism:
@@ -112,7 +112,7 @@ class DPMechanism:
     def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.number]]:
         noise = npr.laplace(0, self._scale, size=state.shape)
         noisy_state = state + noise
-        dtype = state.dtype.str
+        dtype = noisy_state.dtype.str
         meta = json.dumps({"dtype": dtype}).encode()
         return meta, noisy_state
 
@@ -141,9 +141,10 @@ class GaussianNoise:
 
     def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.float64]]:
         noise = npr.normal(self.loc, self.scale, state.shape)
-        dtype = state.dtype.str
+        noisy_state = state + noise
+        dtype = noisy_state.dtype.str
         meta = json.dumps({"dtype": dtype}).encode()
-        return meta, state + noise
+        return meta, noisy_state
 
     def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
         meta_dict = json.loads(meta.decode())
