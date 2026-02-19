@@ -1,4 +1,4 @@
-"""Type definitions for TopoLink."""
+"""Type definitions for ConOps."""
 
 from typing import TypedDict
 

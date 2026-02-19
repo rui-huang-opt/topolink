@@ -1,18 +1,18 @@
-# Topology Link
-This Python package `topolink` facilitates the configuration of graph topologies in physical networks using mathematical notation.
+# ConOps (Consensus Operations)
+This Python package **conops** facilitates distributed consensus operations over graph topologies.
 
 ## Installation
 Install via pip:
 
 ```bash
-pip install git+https://github.com/rui-huang-opt/topolink.git
+pip install git+https://github.com/rui-huang-opt/conops.git
 ```
 
 Or, for development:
 
 ```bash
-git clone https://github.com/rui-huang-opt/topolink.git
-cd topolink
+git clone https://github.com/rui-huang-opt/conops.git
+cd conops
 pip install -e .
 ```
 
@@ -63,7 +63,7 @@ plt.show()
 
 ## Deploying an Undirected Graph Network
 
-To deploy an undirected graph network using `topolink`, follow these steps:
+To deploy an undirected graph network using `conops`, follow these steps:
 
 1. **Define Nodes and Edges**  
    Specify the nodes and their connections as shown in the usage example above.
@@ -108,7 +108,7 @@ where $\alpha > 0$ is the step size parameter. In each iteration, nodes only exc
 
 ```python
 # On the master (graph coordinator) machine
-from topolink import Graph, bootstrap
+from conops import Graph, bootstrap
 
 nodes = ["1", "2", "3", "4", "5"]
 edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
@@ -124,7 +124,7 @@ bootstrap(ring)
 
 ```python
 # On each node machine/process
-from topolink import NodeHandle
+from conops import NodeHandle
 
 node_idx = "1"  # Change this for each node (e.g., "2", "3", ...)
 
@@ -134,7 +134,7 @@ nh = NodeHandle(node_idx)
 # Achieve state convergence across all nodes through neighbor communication
 import numpy as np
 
-np.random.seed(int(node_name))
+np.random.seed(int(node_idx))
 state = np.random.uniform(-100.0, 100.0, 3)
 
 alpha = 0.45

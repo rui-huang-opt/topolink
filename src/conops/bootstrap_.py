@@ -8,7 +8,7 @@ from .graph import Graph
 from .utils import get_local_ip
 from .discovery import GraphAdvertiser
 
-logger = getLogger("topolink.graph")
+logger = getLogger("conops.bootstrap")
 
 
 class BootstrapService:
@@ -34,7 +34,7 @@ class BootstrapService:
             self._graph_advertiser.register(ip_address, port)
 
         elif self._graph.transport == "ipc":
-            router.bind(f"ipc://@topolink-graph-{self._graph.name}")
+            router.bind(f"ipc://@conops-graph-{self._graph.name}")
 
         else:
             err_msg = f"Unsupported transport type: {self._graph.transport}"

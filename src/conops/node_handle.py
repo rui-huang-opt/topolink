@@ -13,7 +13,7 @@ from .discovery import discover_graph
 from .transform import Transform, Identity
 
 
-logger = getLogger(f"topolink.node_handle")
+logger = getLogger(f"conops.node_handle")
 
 
 @dataclass(slots=True)
@@ -138,9 +138,9 @@ class NodeHandle:
             port = self._out_socket.bind_to_random_port(f"tcp://{ip_address}")
             endpoint = f"{ip_address}:{port}"
         elif self._transport == "ipc":
-            graph_endpoint = f"@topolink-graph-{self._graph_name}"
-            self._out_socket.bind(f"ipc://@topolink-{self._graph_name}-{self._idx}")
-            endpoint = f"@topolink-{self._graph_name}-{self._idx}"
+            graph_endpoint = f"@conops-graph-{self._graph_name}"
+            self._out_socket.bind(f"ipc://@conops-{self._graph_name}-{self._idx}")
+            endpoint = f"@conops-{self._graph_name}-{self._idx}"
         else:
             err_msg = f"Unsupported transport type: {self._transport}"
             logger.error(err_msg)

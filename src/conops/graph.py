@@ -8,7 +8,7 @@ from numpy.typing import NDArray
 from .types import NeighborInfo
 from .utils import is_symmetric_doubly_stochastic, normalize_transport
 
-logger = getLogger("topolink.graph")
+logger = getLogger("conops.graph")
 
 
 class Graph:

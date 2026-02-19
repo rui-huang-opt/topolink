@@ -1,4 +1,4 @@
-"""Utility functions for TopoLink."""
+"""Utility functions for ConOps."""
 
 from socket import socket, AF_INET, SOCK_DGRAM
 

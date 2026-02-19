@@ -5,7 +5,7 @@ from logging import getLogger
 from zeroconf import Zeroconf, ServiceInfo, ServiceBrowser, ServiceListener
 
 # Service type for Zeroconf
-SERVICE_TYPE = "_topolink._tcp.local."
+SERVICE_TYPE = "_conops._tcp.local."
 
 # Discovery parameters
 # Number of retries and timeout duration (in seconds)
@@ -13,7 +13,7 @@ SERVICE_TYPE = "_topolink._tcp.local."
 RETRIES = 3
 TIMEOUT = 5
 
-logger = getLogger("topolink.discovery")
+logger = getLogger("conops.discovery")
 
 
 class GraphAdvertiser:
@@ -31,7 +31,7 @@ class GraphAdvertiser:
             properties={
                 "role": "graph",
                 "version": "0.1.0",
-                "description": "Topolink Graph Service",
+                "description": "ConOps Graph Service",
             },
             server=socket.gethostname() + ".local.",
         )
