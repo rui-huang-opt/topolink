@@ -65,21 +65,22 @@ plt.show()
 
 To deploy an undirected graph network using `conops`, follow these steps:
 
-1. **Define Nodes and Edges**  
-   Specify the nodes and their connections as shown in the usage example above.
+1. **Prepare local topology information**  
+   Each node should know:
+   - its own index `idx`
+   - its neighbors as a dictionary `{idx: weight}`
 
-2. **Initialize the Graph on the Master Machine**  
-   On the master machine, create the `Graph` object and start the graph with `deploy()`.
+2. **Initialize the node locally**  
+   On each machine or process, create a `NodeHandle` with the node's local graph information.
 
-3. **Join the Network from Each Node**  
-   On each participating machine or process, create a `NodeHandle` object with the node's name.
+3. **Start distributed communication**  
+   Each node communicates directly with its neighbors.
 
 > **Note:**  
-> The graph process only assists in setting up the network according to the mathematical topology definition.
-It does **not** participate in subsequent communication between nodes.
+> `conops` is fully distributed and does not use a central server.  
+> Each node is initialized independently using its own `idx` and neighbor dictionary.
 
-The `NodeHandle` class primarily provides each node (machine or process) with an interface for communication with other nodes.
-It also encapsulates common graph operators (such as the Laplacian operator), making it convenient to perform distributed computation and message passing within a network topology.
+The `NodeHandle` class provides an interface for neighbor communication and common graph operators, such as the Laplacian operator, for distributed computation over the network topology.
 
 ### NodeHandle Example: Laplacian Consensus
 
@@ -104,46 +105,29 @@ $$
 
 where $\alpha > 0$ is the step size parameter. In each iteration, nodes only exchange information with their neighbors. Eventually, all $x_i$ converge to the same value (e.g., the initial average).
 
-#### **Master Machine Side: Define and Launch the Graph**
-
-```python
-# On the master (graph coordinator) machine
-from conops import Graph, bootstrap
-
-nodes = ["1", "2", "3", "4", "5"]
-edges = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
-
-# Create the graph object
-ring = Graph(nodes, edges)
-
-# Bootstrap the ring to allow nodes to join
-bootstrap(ring)
-```
-
-#### **Node Side: Join the Network**
-
 ```python
 # On each node machine/process
 from conops import NodeHandle
 
 node_idx = "1"  # Change this for each node (e.g., "2", "3", ...)
+neighbors = {"2": 0.45, "5": 0.45} # Change this for each node
 
-# Join the network
-nh = NodeHandle(node_idx)
+# Create the node handle
+nh = NodeHandle(node_idx, neighbors)
 
 # Achieve state convergence across all nodes through neighbor communication
 import numpy as np
+import numpy.random as npr
 
-np.random.seed(int(node_idx))
-state = np.random.uniform(-100.0, 100.0, 3)
+npr.seed(int(node_idx))
+state = npr.uniform(-100.0, 100.0, 3)
 
 alpha = 0.45
 
 print(f"Node {node_idx} initial state: {state}")
 
 for k in range(50):
-   lap_state = nh.laplacian(state)
-   state -= alpha * lap_state
+   state = state - alpha * nh.laplacian(state)
 
 print(f"Node {node_idx} final state: {state}")
 ```
