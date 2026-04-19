@@ -1,19 +1,30 @@
 from logging import getLogger
-from typing import Literal, KeysView
+from typing import KeysView
 from collections import deque
 
 import numpy as np
 from numpy.typing import NDArray
 
-from .types import NeighborInfo
-from .utils import is_symmetric_doubly_stochastic, normalize_transport
+from .utils import is_symmetric_doubly_stochastic
 
 logger = getLogger("conops.graph")
 
 
 class Graph:
     """
-    Represents a network topology graph for distributed nodes.
+    A lightweight helper class for constructing node-wise inputs for `NodeHandle`.
+
+    In decentralized optimization, communication topologies are often specified
+    globally by a set of nodes and edges or by a weighted mixing matrix `W`.
+    This class provides a simple graph representation for such topology
+    descriptions.
+
+    After a `Graph` is initialized, `graph[i]` returns the local information
+    needed to initialize the `NodeHandle` of node `i`, namely its neighbors
+    and the corresponding communication weights.
+
+    This class is only a convenience utility and is not part of the core
+    optimization logic.
 
     Parameters
     ----------
@@ -23,50 +34,35 @@ class Graph:
     edges : list[tuple[str, str]] | None, optional
         An iterable of edges represented as tuples of node names (u, v). If None, the graph starts with no edges.
 
-    name : str, optional
-        The name of the graph service. Default is "default". When deploying multiple graphs, ensure each has a unique name.
-
-    transport : Literal["tcp", "ipc"], optional
-        The transport type for ZeroMQ communication (default is "tcp").
-        "ipc" is recommended for local multi-process communication on the same machine for better performance.
-
     Attributes
     ----------
-    name : str
-        The name of the graph service.
-
     nodes : KeysView[str]
         A view of the node names in the graph.
 
     edges : list[tuple[str, str]]
         A list of edges in the graph represented as tuples of node names (u, v).
 
-    number_of_nodes : int
+    num_nodes : int
         The total number of nodes in the graph.
 
-    transport : str
-        The transport type used for communication.
-        Note that "ipc" is only supported for Linux systems.
-
-    adjacency : dict[str, dict[str, NeighborInfo]]
-        The adjacency representation of the graph, where each key is a node name, and the value is a dictionary mapping neighboring node names to their NeighborInfo.
+    adj : dict[str, dict[str, float]]
+        The adjacency representation of the graph, where each key is a node name,
+        and the value is a dictionary mapping neighboring node names to their weights.
 
     Notes
     -----
-    - Use the `bootstrap` function to start the bootstrap service for node attachment and network formation.
-    - The `from_mixing_matrix` method provides a convenient way to create a graph from a mixing matrix, ensuring the matrix is symmetric and double-stochastic.
+    - The `from_mixing_matrix` method provides a convenient way to create a graph from a mixing matrix,
+      ensuring the matrix is symmetric and double-stochastic.
     """
 
     def __init__(
         self,
         nodes: list[str] | None = None,
         edges: list[tuple[str, str]] | None = None,
-        name: str = "default",
-        transport: Literal["tcp", "ipc"] = "tcp",
     ) -> None:
         nodes_ = nodes or []
         edges_ = edges or []
-        self._adj: dict[str, dict[str, NeighborInfo]] = {u: {} for u in nodes_}
+        self._adj: dict[str, dict[str, float]] = {u: {} for u in nodes_}
 
         for u, v in edges_:
             if u not in self._adj:
@@ -74,19 +70,21 @@ class Graph:
             if v not in self._adj:
                 self._adj[v] = {}
 
-            self._adj[u][v] = NeighborInfo(weight=1.0, endpoint="")
-            self._adj[v][u] = NeighborInfo(weight=1.0, endpoint="")
+            self._adj[u][v] = 0.0
+            self._adj[v][u] = 0.0
 
-        self.name = name
-        self._transport = normalize_transport(transport)
+        for n_i in self._adj.values():
+            deg = len(n_i)
+            if deg > 0:
+                weight = 1.0 / deg
+                for j in n_i:
+                    n_i[j] = weight
 
     @classmethod
     def from_mixing_matrix(
         cls,
         mixing_matrix: NDArray[np.float64],
         nodes: list[str] | None = None,
-        name: str = "default",
-        transport: Literal["tcp", "ipc"] = "tcp",
     ) -> "Graph":
         """
         Create a Graph instance from a mixing matrix.
@@ -98,7 +96,8 @@ class Graph:
             A square matrix representing the mixing coefficients between nodes.
 
         nodes : list[str], optional
-            A list of self defined node names. If not provided, nodes will be named sequentially as "1", "2", ..., "n".
+            A list of self defined node names. If not provided,
+            nodes will be named sequentially as "1", "2", ..., "n".
         """
         if not is_symmetric_doubly_stochastic(mixing_matrix):
             err_msg = "The mixing matrix must be symmetric doubly stochastic."
@@ -114,7 +113,7 @@ class Graph:
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        adj: dict[str, dict[str, NeighborInfo]] = {u: {} for u in nodes}
+        adj: dict[str, dict[str, float]] = {u: {} for u in nodes}
 
         nz_rows, nz_cols = np.nonzero(mixing_matrix)
         mask = nz_rows < nz_cols
@@ -123,13 +122,19 @@ class Graph:
             weight = mixing_matrix[i, j].item()
             u = nodes[i]
             v = nodes[j]
-            adj[u][v] = NeighborInfo(weight=weight, endpoint="")
-            adj[v][u] = NeighborInfo(weight=weight, endpoint="")
+            adj[u][v] = weight
+            adj[v][u] = weight
 
-        graph = cls(name=name, transport=transport)
+        graph = cls()
         graph._adj = adj
 
         return graph
+
+    def __getitem__(self, key: str) -> dict[str, float]:
+        """
+        Get the neighbors and their weights for a given node.
+        """
+        return self._adj[key]
 
     @property
     def nodes(self) -> KeysView[str]:
@@ -145,19 +150,11 @@ class Graph:
         return edges
 
     @property
-    def number_of_nodes(self) -> int:
+    def num_nodes(self) -> int:
         return len(self._adj)
 
     @property
-    def transport(self) -> str:
-        return self._transport
-
-    @transport.setter
-    def transport(self, value: Literal["tcp", "ipc"]) -> None:
-        self._transport = normalize_transport(value)
-
-    @property
-    def adjacency(self) -> dict[str, dict[str, NeighborInfo]]:
+    def adj(self) -> dict[str, dict[str, float]]:
         return self._adj
 
     def is_connected(self) -> bool:

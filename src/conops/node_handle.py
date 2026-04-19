@@ -3,21 +3,19 @@ from json import loads
 from typing import KeysView, Literal
 from dataclasses import dataclass
 
-import numpy as np
 import zmq
+import pyre
+import numpy as np
 from numpy.typing import NDArray
 
-from .types import NeighborInfo
 from .utils import get_local_ip, normalize_transport
-from .discovery import discover_graph
 from .transform import Transform, Identity
-
 
 logger = getLogger(f"conops.node_handle")
 
 
 @dataclass(slots=True)
-class NeighborContext:
+class Neighbor:
     weight: float
     endpoint: str
     in_socket: zmq.Socket
@@ -28,18 +26,18 @@ class NodeHandle:
     NodeHandle manages communication and state exchange between a node and its neighbors in a distributed network.
 
     This class handles:
-    - Registration with a graph service to obtain neighbor information.
-    - Establishing ZeroMQ sockets for communication with neighbors.
-    - Sending and receiving state information to/from neighbors.
-    - Performing operations like exchanging states, computing Laplacians, and weighted mixing.
+    - Discovery of neighbor nodes using Pyre for service discovery.
+    - Establishing ZeroMQ connections to neighbors based on the discovered endpoints.
+    - Exchanging state information with neighbors using a specified Transform for encoding and decoding.
+    - Providing utility methods for common operations like computing the Laplacian and performing weighted mixing.
 
     Parameters
     ----------
     idx : str
         The index of the node within the graph.
 
-    graph_name : str, optional
-        Name of the graph to connect to (default is "default"). This should match the name used during graph creation.
+    namespace : str, optional
+        The namespace for Pyre service discovery (default is "default"). Nodes will only discover neighbors that join the same namespace.
 
     transform : Transform | None, optional
         An optional Transform instance for encoding and decoding state data during communication.
@@ -74,32 +72,35 @@ class NodeHandle:
     def __init__(
         self,
         idx: str,
-        graph_name: str = "default",
+        neighbors: dict[str, float],
+        namespace: str = "default",
         transform: Transform | None = None,
         transport: Literal["tcp", "ipc"] = "tcp",
     ) -> None:
         self._idx = idx
-        self._graph_name = graph_name
-        self._transform = transform or Identity()
-        self._transport = normalize_transport(transport)
 
         self._context = zmq.Context()
-        self._reg = self._context.socket(zmq.DEALER)
-        self._weight = 1.0
-        self._out_socket = self._context.socket(zmq.ROUTER)
+        self._neighbors: dict[str, Neighbor] = {}
+        for j, weight in neighbors.items():
+            in_socket = self._context.socket(zmq.DEALER)
+            in_socket.setsockopt(zmq.IDENTITY, self._idx.encode())
+            self._neighbors[j] = Neighbor(
+                weight=weight, endpoint="", in_socket=in_socket
+            )
 
-        self._graph_endpoint, self._endpoint = self._setup_endpoint()
+        self._namespace = namespace
+        self._transform = transform or Identity()
+        self._transport = normalize_transport(transport)
+        self._endpoint, self._out_socket = self._create_and_bind_endpoint()
+        self._weight = 1.0 - sum(neighbors.values())
 
-        self._neighbor_contexts: dict[str, NeighborContext] = {}
-
-        self._register_to_graph()
-        self._setup_neighbors()
+        self._discover_neighbors()
         self._connect_to_neighbors()
 
         # Cache neighbor indices as bytes for ZeroMQ communication.
         # NOTE: Neighbor set is currently static.
         # If dynamic neighbor updates are introduced, this cache must be refreshed.
-        self._neighbor_idx_bytes = [j.encode() for j in self._neighbor_contexts]
+        self._neighbor_idx_bytes = [j.encode() for j in self._neighbors]
 
     @property
     def idx(self) -> str:
@@ -107,94 +108,110 @@ class NodeHandle:
 
     @property
     def degree(self) -> int:
-        return len(self._neighbor_contexts)
+        return len(self._neighbors)
 
     @property
     def neighbors(self) -> KeysView[str]:
-        return self._neighbor_contexts.keys()
+        return self._neighbors.keys()
 
     @property
     def weights(self) -> dict[str, float]:
-        return {j: nc.weight for j, nc in self._neighbor_contexts.items()}
+        return {j: nbr.weight for j, nbr in self._neighbors.items()}
 
     def __enter__(self) -> "NodeHandle":
         return self
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
+    def __exit__(self, exc_type, exc_value, traceback) -> bool:
         self.close()
+        return False
 
-    def _setup_endpoint(self) -> tuple[str, str]:
+    def _create_and_bind_endpoint(self) -> tuple[str, zmq.SyncSocket]:
+        out_socket = self._context.socket(zmq.ROUTER)
         if self._transport == "tcp":
-            graph_info = discover_graph(self._graph_name)
-
-            if graph_info is None:
-                err_msg = f"Timeout: Node '{self._idx}' can't discover graph '{self._graph_name}'."
-                logger.error(err_msg)
-                raise ConnectionError(err_msg)
-
-            graph_endpoint = f"{graph_info[0]}:{graph_info[1]}"
-
             ip_address = get_local_ip()
-            port = self._out_socket.bind_to_random_port(f"tcp://{ip_address}")
+            port = out_socket.bind_to_random_port(f"tcp://{ip_address}")
             endpoint = f"{ip_address}:{port}"
         elif self._transport == "ipc":
-            graph_endpoint = f"@conops-graph-{self._graph_name}"
-            self._out_socket.bind(f"ipc://@conops-{self._graph_name}-{self._idx}")
-            endpoint = f"@conops-{self._graph_name}-{self._idx}"
+            out_socket.bind(f"ipc://@conops-{self._namespace}-{self._idx}")
+            endpoint = f"@conops-{self._namespace}-{self._idx}"
         else:
             err_msg = f"Unsupported transport type: {self._transport}"
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        return graph_endpoint, endpoint
+        return endpoint, out_socket
 
-    def _register_to_graph(self) -> None:
-        self._reg.connect(f"{self._transport}://{self._graph_endpoint}")
-        idx_bytes = self._idx.encode()
-        endpoint_bytes = self._endpoint.encode()
-        self._reg.send_multipart([idx_bytes, endpoint_bytes])
-        reply = self._reg.recv()
+    def _discover_neighbors(self) -> None:
+        if self._transport == "tcp":
+            node = pyre.Pyre(self._idx)
+            node.set_header("endpoint", self._endpoint)
+            node.join(self._namespace)
+            node.start()
 
-        if reply == b"OK":
-            logger.info(f"Node '{self._idx}' joined graph '{self._graph_name}'.")
-        elif reply == b"Error: Undefined node":
-            err_msg = f"Undefined node '{self._idx}' in graph '{self._graph_name}'."
-            logger.error(err_msg)
-            raise KeyError(err_msg)
-        elif reply == b"Error: Node replaced":
-            err_msg = f"Node '{self._idx}' was replaced in graph '{self._graph_name}'."
-            logger.error(err_msg)
-            raise RuntimeError(err_msg)
+            discovered: set[str] = set()
+            expected = set(self._neighbors.keys())
+            pending: dict[bytes, tuple[str, str]] = {}
+
+            while discovered != expected:
+                msg = node.recv()
+                event = msg[0].decode()
+                nbr_uuid = msg[1]
+
+                if event == "ENTER":
+                    nbr_name = msg[2].decode()
+                    headers: dict[str, str] = loads(msg[3].decode())
+                    pending[nbr_uuid] = (nbr_name, headers["endpoint"])
+                    continue
+
+                if event != "JOIN":
+                    continue
+
+                namespace = msg[3].decode()
+                if namespace != self._namespace:
+                    continue
+
+                info = pending.pop(nbr_uuid, None)
+                if info is None:
+                    continue
+
+                nbr_name, nbr_endpoint = info
+                if nbr_name not in expected:
+                    continue
+
+                self._neighbors[nbr_name].endpoint = nbr_endpoint
+                discovered.add(nbr_name)
+                logger.info(
+                    "Neighbor discovered: "
+                    f"node='{self._idx}', "
+                    f"neighbor='{nbr_name}', "
+                    f"endpoint='{self._neighbors[nbr_name].endpoint}'"
+                )
+
+            node.stop()
+
+        elif self._transport == "ipc":
+            # For IPC transport, we can directly construct the neighbor endpoints without discovery.
+            for j in self._neighbors:
+                self._neighbors[j].endpoint = f"@conops-{self._namespace}-{j}"
+
         else:
-            err_msg = f"Unexpected reply: {reply!r}"
+            err_msg = f"Unsupported transport type: {self._transport}"
             logger.error(err_msg)
-            raise RuntimeError(err_msg)
-
-    def _setup_neighbors(self) -> None:
-        message = self._reg.recv()
-        neighbor_info_dict: dict[str, NeighborInfo] = loads(message.decode())
-
-        for j, info in neighbor_info_dict.items():
-            in_socket = self._context.socket(zmq.DEALER)
-            nc = NeighborContext(in_socket=in_socket, **info)
-            self._neighbor_contexts[j] = nc
-
-        self._weight = 1.0 - sum(nc.weight for nc in self._neighbor_contexts.values())
-        logger.info(f"Node '{self._idx}' received neighbor info and set up sockets.")
+            raise ValueError(err_msg)
 
     def _connect_to_neighbors(self) -> None:
-        for nc in self._neighbor_contexts.values():
-            nc.in_socket.setsockopt(zmq.IDENTITY, self._idx.encode())
-            nc.in_socket.connect(f"{self._transport}://{nc.endpoint}")
+        for nbr in self._neighbors.values():
+            nbr.in_socket.connect(f"{self._transport}://{nbr.endpoint}")
 
-        for nc in self._neighbor_contexts.values():
-            nc.in_socket.send(b"")
+        for nbr in self._neighbors.values():
+            nbr.in_socket.send(b"")
 
         connected = set()
-        while len(connected) < self.degree:
+        expected = set(self._neighbors.keys())
+        while connected != expected:
             client_id, _ = self._out_socket.recv_multipart()
             received_name = client_id.decode()
-            if received_name in self._neighbor_contexts:
+            if received_name in self._neighbors:
                 connected.add(received_name)
 
         logger.info(f"Node '{self._idx}' connected to all neighbors.")
@@ -203,10 +220,9 @@ class NodeHandle:
         """
         Explicitly closes all sockets and terminates the ZeroMQ context.
         """
-        self._reg.close(linger=0)
         self._out_socket.close(linger=0)
-        for nc in self._neighbor_contexts.values():
-            nc.in_socket.close(linger=0)
+        for nbr in self._neighbors.values():
+            nbr.in_socket.close(linger=0)
         self._context.term()
         logger.info(f"Node '{self._idx}' closed all sockets.")
 
@@ -224,14 +240,14 @@ class NodeHandle:
         Returns:
             dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state maps.
         """
-        if state_map.keys() != self._neighbor_contexts.keys():
-            missing = self._neighbor_contexts.keys() - state_map.keys()
-            extra = state_map.keys() - self._neighbor_contexts.keys()
+        if state_map.keys() != self._neighbors.keys():
+            missing = self._neighbors.keys() - state_map.keys()
+            extra = state_map.keys() - self._neighbors.keys()
             err_msg = f"State dictionary keys do not match neighbor names. Missing: {missing}, Extra: {extra}."
             logger.error(err_msg)
             raise ValueError(err_msg)
 
-        for j in self._neighbor_contexts:
+        for j in self._neighbors:
             state = state_map[j]
             meta, payload = self._transform.encode(state)
             payload = np.ascontiguousarray(payload)
@@ -239,8 +255,8 @@ class NodeHandle:
             self._out_socket.send_multipart(msgs, copy=False)
 
         neighbor_states: dict[str, NDArray[np.float64]] = {}
-        for j, nc in self._neighbor_contexts.items():
-            meta, payload = nc.in_socket.recv_multipart()
+        for j, nbr in self._neighbors.items():
+            meta, payload = nbr.in_socket.recv_multipart()
             neighbor_states[j] = self._transform.decode(meta, payload)
 
         return neighbor_states
@@ -264,8 +280,8 @@ class NodeHandle:
             self._out_socket.send_multipart(msgs, copy=False)
 
         neighbor_states: dict[str, NDArray[np.float64]] = {}
-        for j, nc in self._neighbor_contexts.items():
-            meta, payload = nc.in_socket.recv_multipart()
+        for j, nbr in self._neighbors.items():
+            meta, payload = nbr.in_socket.recv_multipart()
             neighbor_states[j] = self._transform.decode(meta, payload)
 
         return neighbor_states
@@ -290,8 +306,8 @@ class NodeHandle:
             self._out_socket.send_multipart(msgs, copy=False)
 
         neighbor_states: list[NDArray[np.float64]] = []
-        for nc in self._neighbor_contexts.values():
-            meta, payload = nc.in_socket.recv_multipart()
+        for nbr in self._neighbors.values():
+            meta, payload = nbr.in_socket.recv_multipart()
             neighbor_states.append(self._transform.decode(meta, payload))
 
         return np.stack(neighbor_states, axis=0)
@@ -334,9 +350,9 @@ class NodeHandle:
             NDArray[float64]: The mixed state vector corresponding to the i-th row of Wx.
         """
         neighbor_states = self.exchange(state)
-        nc = self._neighbor_contexts
+        nbrs = self._neighbors
         mixed_state = state * self._weight + sum(
-            n_state * nc[j].weight for j, n_state in neighbor_states.items()
+            n_state * nbrs[j].weight for j, n_state in neighbor_states.items()
         )
 
         return mixed_state

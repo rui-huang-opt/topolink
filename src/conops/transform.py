@@ -1,4 +1,4 @@
-import json
+from json import loads, dumps
 from typing import Protocol
 
 import numpy as np
@@ -41,11 +41,11 @@ class Identity:
 
     def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.number]]:
         dtype = state.dtype.str
-        meta = json.dumps({"dtype": dtype}).encode()
+        meta = dumps({"dtype": dtype}).encode()
         return meta, state
 
     def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = json.loads(meta.decode())
+        meta_dict = loads(meta.decode())
         dtype = np.dtype(meta_dict["dtype"])
         return np.frombuffer(payload, dtype=dtype).astype(np.float64, copy=False)
 
@@ -80,11 +80,11 @@ class Quantize:
         clipped_state = np.clip(rounded_state, min_val, max_val)
         quantized_state = clipped_state.astype(dtype_, copy=False)
 
-        meta = json.dumps({"scale": scale, "dtype": self.dtype}).encode()
+        meta = dumps({"scale": scale, "dtype": self.dtype}).encode()
         return meta, quantized_state
 
     def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = json.loads(meta.decode())
+        meta_dict = loads(meta.decode())
         dtype = np.dtype(meta_dict["dtype"])
         scale = meta_dict["scale"]
         quantized_state = np.frombuffer(payload, dtype=dtype)
@@ -113,11 +113,11 @@ class DPMechanism:
         noise = npr.laplace(0, self._scale, size=state.shape)
         noisy_state = state + noise
         dtype = noisy_state.dtype.str
-        meta = json.dumps({"dtype": dtype}).encode()
+        meta = dumps({"dtype": dtype}).encode()
         return meta, noisy_state
 
     def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = json.loads(meta.decode())
+        meta_dict = loads(meta.decode())
         dtype = np.dtype(meta_dict["dtype"])
         return np.frombuffer(payload, dtype=dtype).astype(np.float64, copy=False)
 
@@ -143,10 +143,10 @@ class GaussianNoise:
         noise = npr.normal(self.loc, self.scale, state.shape)
         noisy_state = state + noise
         dtype = noisy_state.dtype.str
-        meta = json.dumps({"dtype": dtype}).encode()
+        meta = dumps({"dtype": dtype}).encode()
         return meta, noisy_state
 
     def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = json.loads(meta.decode())
+        meta_dict = loads(meta.decode())
         dtype = np.dtype(meta_dict["dtype"])
         return np.frombuffer(payload, dtype=dtype).astype(np.float64, copy=False)
