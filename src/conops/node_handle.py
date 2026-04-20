@@ -94,6 +94,9 @@ class NodeHandle:
         self._endpoint, self._out_socket = self._create_and_bind_endpoint()
         self._weight = 1.0 - sum(neighbors.values())
 
+        if self._transport == "tcp":
+            self._pyre_node = pyre.Pyre(self._idx)
+
         self._discover_neighbors()
         self._connect_to_neighbors()
 
@@ -143,17 +146,16 @@ class NodeHandle:
 
     def _discover_neighbors(self) -> None:
         if self._transport == "tcp":
-            node = pyre.Pyre(self._idx)
-            node.set_header("endpoint", self._endpoint)
-            node.join(self._namespace)
-            node.start()
+            self._pyre_node.set_header("endpoint", self._endpoint)
+            self._pyre_node.join(self._namespace)
+            self._pyre_node.start()
 
             discovered: set[str] = set()
             expected = set(self._neighbors.keys())
             pending: dict[bytes, tuple[str, str]] = {}
 
             while discovered != expected:
-                msg = node.recv()
+                msg = self._pyre_node.recv()
                 event = msg[0].decode()
                 nbr_uuid = msg[1]
 
@@ -186,8 +188,6 @@ class NodeHandle:
                     f"neighbor='{nbr_name}', "
                     f"endpoint='{self._neighbors[nbr_name].endpoint}'"
                 )
-
-            node.stop()
 
         elif self._transport == "ipc":
             # For IPC transport, we can directly construct the neighbor endpoints without discovery.
@@ -224,6 +224,10 @@ class NodeHandle:
         for nbr in self._neighbors.values():
             nbr.in_socket.close(linger=0)
         self._context.term()
+
+        if self._transport == "tcp":
+            self._pyre_node.stop()
+
         logger.info(f"Node '{self._idx}' closed all sockets.")
 
     def neighborwise_exchange(
