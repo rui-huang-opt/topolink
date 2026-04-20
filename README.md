@@ -130,6 +130,8 @@ for k in range(50):
    state = state - alpha * nh.laplacian(state)
 
 print(f"Node {node_idx} final state: {state}")
+
+nh.close()
 ```
 
 ```
