@@ -84,18 +84,16 @@ class NodeHandle:
         for j, weight in neighbors.items():
             in_socket = self._context.socket(zmq.DEALER)
             in_socket.setsockopt(zmq.IDENTITY, self._idx.encode())
-            self._neighbors[j] = Neighbor(
-                weight=weight, endpoint="", in_socket=in_socket
-            )
+            self._neighbors[j] = Neighbor(weight, "", in_socket)
 
         self._namespace = namespace
         self._transform = transform or Identity()
-        self._transport = normalize_transport(transport)
+
+        transport_ = normalize_transport(transport)
+        self._pyre_node = pyre.Pyre(self._idx) if transport_ == "tcp" else None
+
         self._endpoint, self._out_socket = self._create_and_bind_endpoint()
         self._weight = 1.0 - sum(neighbors.values())
-
-        if self._transport == "tcp":
-            self._pyre_node = pyre.Pyre(self._idx)
 
         self._discover_neighbors()
         self._connect_to_neighbors()
@@ -130,85 +128,74 @@ class NodeHandle:
 
     def _create_and_bind_endpoint(self) -> tuple[str, zmq.SyncSocket]:
         out_socket = self._context.socket(zmq.ROUTER)
-        if self._transport == "tcp":
+        if self._pyre_node is None:
+            out_socket.bind(f"ipc://@conops-{self._namespace}-{self._idx}")
+            endpoint = f"ipc://@conops-{self._namespace}-{self._idx}"
+        else:
             ip_address = get_local_ip()
             port = out_socket.bind_to_random_port(f"tcp://{ip_address}")
-            endpoint = f"{ip_address}:{port}"
-        elif self._transport == "ipc":
-            out_socket.bind(f"ipc://@conops-{self._namespace}-{self._idx}")
-            endpoint = f"@conops-{self._namespace}-{self._idx}"
-        else:
-            err_msg = f"Unsupported transport type: {self._transport}"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
+            endpoint = f"tcp://{ip_address}:{port}"
 
         return endpoint, out_socket
 
     def _discover_neighbors(self) -> None:
-        if self._transport == "tcp":
-            self._pyre_node.set_header("endpoint", self._endpoint)
-            self._pyre_node.join(self._namespace)
-            self._pyre_node.start()
-
-            discovered: set[str] = set()
-            expected = set(self._neighbors.keys())
-            pending: dict[bytes, tuple[str, str]] = {}
-
-            while discovered != expected:
-                msg = self._pyre_node.recv()
-                event = msg[0].decode()
-                nbr_uuid = msg[1]
-
-                if event == "ENTER":
-                    nbr_name = msg[2].decode()
-                    headers: dict[str, str] = loads(msg[3].decode())
-                    pending[nbr_uuid] = (nbr_name, headers["endpoint"])
-                    continue
-
-                if event != "JOIN":
-                    continue
-
-                namespace = msg[3].decode()
-                if namespace != self._namespace:
-                    continue
-
-                info = pending.pop(nbr_uuid, None)
-                if info is None:
-                    continue
-
-                nbr_name, nbr_endpoint = info
-                if nbr_name not in expected:
-                    continue
-
-                self._neighbors[nbr_name].endpoint = nbr_endpoint
-                discovered.add(nbr_name)
-                logger.info(
-                    "Neighbor discovered: "
-                    f"node='{self._idx}', "
-                    f"neighbor='{nbr_name}', "
-                    f"endpoint='{self._neighbors[nbr_name].endpoint}'"
-                )
-
-        elif self._transport == "ipc":
+        if self._pyre_node is None:
             # For IPC transport, we can directly construct the neighbor endpoints without discovery.
             for j in self._neighbors:
-                self._neighbors[j].endpoint = f"@conops-{self._namespace}-{j}"
+                self._neighbors[j].endpoint = f"ipc://@conops-{self._namespace}-{j}"
+            return
 
-        else:
-            err_msg = f"Unsupported transport type: {self._transport}"
-            logger.error(err_msg)
-            raise ValueError(err_msg)
+        self._pyre_node.set_header("endpoint", self._endpoint)
+        self._pyre_node.join(self._namespace)
+        self._pyre_node.start()
+
+        discovered: set[str] = set()
+        pending: dict[bytes, tuple[str, str]] = {}
+
+        while len(discovered) < self.degree:
+            msg = self._pyre_node.recv()
+            event = msg[0].decode()
+            nbr_uuid = msg[1]
+
+            if event == "ENTER":
+                nbr_name = msg[2].decode()
+                headers: dict[str, str] = loads(msg[3].decode())
+                pending[nbr_uuid] = (nbr_name, headers["endpoint"])
+                continue
+
+            if event != "JOIN":
+                continue
+
+            namespace = msg[3].decode()
+            if namespace != self._namespace:
+                continue
+
+            info = pending.pop(nbr_uuid, None)
+            if info is None:
+                continue
+
+            nbr_name, nbr_endpoint = info
+            if nbr_name not in self._neighbors:
+                continue
+
+            self._neighbors[nbr_name].endpoint = nbr_endpoint
+            discovered.add(nbr_name)
+            logger.info(
+                "Neighbor discovered: "
+                f"node='{self._idx}', "
+                f"neighbor='{nbr_name}', "
+                f"endpoint='{self._neighbors[nbr_name].endpoint}'"
+            )
 
     def _connect_to_neighbors(self) -> None:
         for nbr in self._neighbors.values():
-            nbr.in_socket.connect(f"{self._transport}://{nbr.endpoint}")
+            nbr.in_socket.connect(f"{nbr.endpoint}")
 
         for nbr in self._neighbors.values():
             nbr.in_socket.send(b"")
 
         connected = set()
-        expected = set(self._neighbors.keys())
-        while connected != expected:
+        while len(connected) < self.degree:
             client_id, _ = self._out_socket.recv_multipart()
             received_name = client_id.decode()
             if received_name in self._neighbors:
@@ -225,7 +212,7 @@ class NodeHandle:
             nbr.in_socket.close(linger=0)
         self._context.term()
 
-        if self._transport == "tcp":
+        if self._pyre_node is not None:
             self._pyre_node.stop()
 
         logger.info(f"Node '{self._idx}' closed all sockets.")

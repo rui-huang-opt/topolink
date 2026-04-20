@@ -21,11 +21,10 @@ def get_local_ip() -> str:
 
 
 import numpy as np
-from numpy import allclose, float64
 from numpy.typing import NDArray
 
 
-def is_symmetric_doubly_stochastic(matrix: NDArray[float64]) -> bool:
+def is_symmetric_doubly_stochastic(matrix: NDArray[np.float64]) -> bool:
     """
     Check if a matrix is symmetric doubly stochastic.
 
@@ -41,30 +40,31 @@ def is_symmetric_doubly_stochastic(matrix: NDArray[float64]) -> bool:
     """
     if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
         return False
-    if not allclose(matrix, matrix.T):
+    if not np.allclose(matrix, matrix.T):
         return False
     if np.any(matrix < 0):
         return False
 
-    return allclose(np.sum(matrix, axis=0), 1.0)
+    return np.allclose(np.sum(matrix, axis=0), 1.0)
 
 
 import sys
 import warnings
+from typing import Literal
 
 
-def normalize_transport(transport: str) -> str:
+def normalize_transport(transport: Literal["tcp", "ipc"]) -> Literal["tcp", "ipc"]:
     """
     Normalize the transport type based on the operating system.
 
     Parameters
     ----------
-    transport : str
+    transport : Literal["tcp", "ipc"]
         The desired transport type.
 
     Returns
     -------
-    str
+    Literal["tcp", "ipc"]
         The normalized transport type.
 
     Raises
