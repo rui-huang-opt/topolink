@@ -184,7 +184,7 @@ class NodeHandle:
                 "Neighbor discovered: "
                 f"node='{self._idx}', "
                 f"neighbor='{nbr_name}', "
-                f"endpoint='{self._neighbors[nbr_name].endpoint}'"
+                f"endpoint='{nbr_endpoint}'"
             )
 
     def _connect_to_neighbors(self) -> None:
