@@ -21,19 +21,26 @@ class StateMeta(msgspec.Struct, frozen=True):
     shape: tuple[int, ...]
 
 
-class StateMessage(msgspec.Struct, frozen=True):
+class State(msgspec.Struct, frozen=True):
     round_id: int
     name: str
     meta: bytes
     payload: bytes
 
 
-@dataclass
+class Request(msgspec.Struct, frozen=True):
+    round_id: int
+    name: str
+
+
+@dataclass(slots=True)
 class PeerInfo:
     pyre_uuid: uuid.UUID | None = None
     last_seen: float = 0.0
     reachable: bool = False
-    pending: list[StateMessage] = field(default_factory=list)
+    pending: list[State] = field(default_factory=list)
+    received: dict[tuple[int, str], State] = field(default_factory=dict)
+    delivered: set[tuple[int, str]] = field(default_factory=set)
 
 
 class PeerRegistry:
@@ -97,17 +104,36 @@ class PeerRegistry:
 
         return peer
 
+    def prune(self, min_round: int) -> None:
+        for peer in self._peers.values():
+            peer.delivered = {key for key in peer.delivered if key[0] >= min_round}
+            peer.received = {
+                key: msg for key, msg in peer.received.items() if key[0] >= min_round
+            }
+
 
 class ProtocolState:
-    def __init__(self) -> None:
+    def __init__(self, cache_rounds: int = 2) -> None:
+        if cache_rounds < 1:
+            raise ValueError("cache_rounds must be at least 1")
+
         self._lock = threading.Lock()
+
         self._round_id = 0
         self._exchange_name: str | None = None
+
+        self._cache_rounds = cache_rounds
+        self._sent: dict[int, dict[str, State]] = {}
 
     @property
     def exchange_key(self) -> tuple[int, str | None]:
         with self._lock:
             return self._round_id, self._exchange_name
+
+    @property
+    def round_id(self) -> int:
+        with self._lock:
+            return self._round_id
 
     def begin_exchange(self, name: str) -> tuple[int, str]:
         with self._lock:
@@ -115,6 +141,7 @@ class ProtocolState:
                 raise RuntimeError(f"Exchange already active: {self._exchange_name}")
 
             self._exchange_name = name
+
             return self._round_id, name
 
     def end_exchange(self, name: str) -> None:
@@ -124,19 +151,53 @@ class ProtocolState:
 
             self._exchange_name = None
 
-    def advance_round(self) -> None:
+    def advance_round(self) -> int:
         with self._lock:
             if self._exchange_name is not None:
                 raise RuntimeError("Cannot advance round during an active exchange")
 
             self._round_id += 1
+            self._prune_cache()
+
+            return self._round_id
 
     def set_round(self, round_id: int) -> None:
         with self._lock:
             if self._exchange_name is not None:
                 raise RuntimeError("Cannot set round during an active exchange")
 
+            if round_id < 0:
+                raise ValueError("round_id must be non-negative")
+
             self._round_id = round_id
+            self._prune_cache()
+
+    def cache_message(self, msg: State) -> None:
+        with self._lock:
+            if msg.round_id != self._round_id:
+                raise RuntimeError(
+                    f"Cannot cache round {msg.round_id} "
+                    f"while current round is {self._round_id}"
+                )
+
+            self._sent.setdefault(msg.round_id, {})[msg.name] = msg
+
+    def get_cached(self, round_id: int, name: str) -> State | None:
+        with self._lock:
+            messages = self._sent.get(round_id)
+
+            if messages is None:
+                return None
+
+            return messages.get(name)
+
+    def _prune_cache(self) -> None:
+        min_round = self._round_id - self._cache_rounds + 1
+
+        stale_rounds = [round_id for round_id in self._sent if round_id < min_round]
+
+        for round_id in stale_rounds:
+            del self._sent[round_id]
 
 
 class NetworkBackend:
@@ -153,53 +214,63 @@ class NetworkBackend:
         self._router = router
 
         self._peers = PeerRegistry()
-
-        self._msg_cache: StateMessage | None = None
+        self._last_pruned_round = 0
 
     def handle_pyre_event(self, event: list[bytes]) -> None:
+        self._prune_if_needed()
+
         if not event:
             return
 
         event_type = event[0].decode("utf-8")
+
         timestamp = time.time()
 
-        match event_type:
-            case "ENTER":
-                self._handle_enter(event, timestamp)
-            case "EXIT":
-                self._handle_exit(event, timestamp)
-            case "WHISPER":
-                self._handle_message_event(event)
-            case _:
-                logger.debug("[%s] Ignoring Pyre event: %s", self._node_id, event_type)
+        if event_type == "ENTER":
+            self._handle_enter(event, timestamp)
+        elif event_type == "EXIT":
+            self._handle_exit(event, timestamp)
+        elif event_type == "WHISPER":
+            self._handle_whisper(event)
+        else:
+            logger.debug("[%s] Ignoring Pyre event: %s", self._node_id, event_type)
 
     def handle_frontend_message(self, frames: list[bytes]) -> None:
-        if len(frames) < 3:
+        self._prune_if_needed()
+
+        if len(frames) != 3:
             return
 
-        peer_node_id_bytes, meta, payload = frames[:3]
+        peer_node_id_bytes, meta, payload = frames
         peer_node_id = peer_node_id_bytes.decode("utf-8")
-
-        peer = self._peers.get_or_create_peer(peer_node_id)
 
         round_id, name = self._state.exchange_key
 
         if name is None:
-            logger.warning(
-                "[%s] Received message from %s outside of an active exchange",
-                self._node_id,
-                peer_node_id,
-            )
+            logger.warning("[%s] No active exchange", self._node_id)
             return
 
-        msg = StateMessage(round_id=round_id, name=name, meta=meta, payload=payload)
-        self._msg_cache = msg
+        key = (round_id, name)
+
+        msg = State(round_id=round_id, name=name, meta=meta, payload=payload)
+
+        self._state.cache_message(msg)
+
+        peer = self._peers.get_or_create_peer(peer_node_id)
+
+        # Neighbor's state may have been cached from a previous round,
+        # so we check if we have already delivered it
+        cached = peer.received.pop(key, None)
+
+        if cached is not None and key not in peer.delivered:
+            self._forward_to_frontend(peer_node_id, cached)
+            peer.delivered.add(key)
 
         if not peer.reachable or peer.pyre_uuid is None:
             peer.pending.append(msg)
             return
 
-        self._node.whisper(peer.pyre_uuid, msgspec.msgpack.encode(msg))
+        self._send_state(peer.pyre_uuid, msg)
 
     def _handle_enter(self, event: list[bytes], timestamp: float) -> None:
         pyre_uuid = self._extract_uuid(event)
@@ -207,6 +278,7 @@ class NetworkBackend:
             return
 
         peer_node_id = self._extract_node_id(event)
+
         if peer_node_id is None or peer_node_id == self._node_id:
             return
 
@@ -217,7 +289,7 @@ class NetworkBackend:
         )
 
         for msg in peer.pending:
-            self._node.whisper(pyre_uuid, msgspec.msgpack.encode(msg))
+            self._send_state(pyre_uuid, msg)
 
         peer.pending.clear()
 
@@ -228,26 +300,116 @@ class NetworkBackend:
 
         self._peers.mark_unreachable(pyre_uuid=pyre_uuid, last_seen=timestamp)
 
-    def _handle_message_event(self, event: list[bytes]) -> None:
+    def _handle_whisper(self, event: list[bytes]) -> None:
         peer_node_id = self._extract_node_id(event)
-        msg = self._extract_state_message(event)
+        message_type = self._extract_message_type(event)
 
-        if peer_node_id is None or msg is None:
+        if peer_node_id is None or message_type is None:
             return
 
+        if message_type == "STATE":
+            msg = self._extract_state(event)
+
+            if msg is not None:
+                self._handle_state(peer_node_id, msg)
+
+        elif message_type == "REQUEST":
+            request = self._extract_request(event)
+
+            if request is not None:
+                self._handle_request(peer_node_id, request)
+
+        else:
+            logger.debug("[%s] Ignoring message type: %s", self._node_id, message_type)
+
+    def _handle_state(self, peer_node_id: str, msg: State) -> None:
+        peer = self._peers.get_or_create_peer(peer_node_id)
+
+        local_round, local_name = self._state.exchange_key
+
+        key = (msg.round_id, msg.name)
+        local_key = (local_round, local_name)
+
+        # 正是当前需要的消息
+        if key == local_key:
+            if key in peer.delivered:
+                return
+
+            self._forward_to_frontend(peer_node_id, msg)
+
+            peer.delivered.add(key)
+            return
+
+        # 对方 round 落后
+        if msg.round_id < local_round:
+            self._handle_behind_peer(peer_node_id, msg)
+            return
+
+        # 对方 round 更大，或者同 round 但 name 不一致
+        peer.received[key] = msg
+
+        self._request_current_state(peer_node_id)
+
+    def _handle_request(self, peer_node_id: str, request: Request) -> None:
+        cached = self._state.get_cached(round_id=request.round_id, name=request.name)
+
+        if cached is None:
+            return
+
+        peer = self._peers.get_peer(peer_node_id)
+
+        if peer is None or not peer.reachable or peer.pyre_uuid is None:
+            return
+
+        self._send_state(peer.pyre_uuid, cached)
+
+    def _handle_behind_peer(self, peer_node_id: str, msg: State) -> None:
+        cached = self._state.get_cached(round_id=msg.round_id, name=msg.name)
+
+        if cached is None:
+            return
+
+        peer = self._peers.get_peer(peer_node_id)
+
+        if peer is None or not peer.reachable or peer.pyre_uuid is None:
+            return
+
+        self._send_state(peer.pyre_uuid, cached)
+
+    def _request_current_state(self, peer_node_id: str) -> None:
         round_id, name = self._state.exchange_key
 
-        if msg.name != name:
+        if name is None:
             return
 
-        if msg.round_id < round_id:
-            self._state.set_round(msg.round_id)
-        elif msg.round_id > round_id:
+        peer = self._peers.get_peer(peer_node_id)
+
+        if peer is None or not peer.reachable or peer.pyre_uuid is None:
             return
 
-        self._router.send_multipart(
-            [peer_node_id.encode("utf-8"), msg.meta, msg.payload]
-        )
+        request = Request(round_id=round_id, name=name)
+
+        self._send_request(peer.pyre_uuid, request)
+
+    def _forward_to_frontend(self, peer_node_id: str, msg: State) -> None:
+        peer_bytes = peer_node_id.encode("utf-8")
+        self._router.send_multipart([peer_bytes, msg.meta, msg.payload])
+
+    def _send_state(self, pyre_uuid: uuid.UUID, msg: State) -> None:
+        self._node.whisper(pyre_uuid, [b"STATE", msgspec.msgpack.encode(msg)])
+
+    def _send_request(self, pyre_uuid: uuid.UUID, request: Request) -> None:
+        self._node.whisper(pyre_uuid, [b"REQUEST", msgspec.msgpack.encode(request)])
+
+    def _prune_if_needed(self) -> None:
+        round_id, _ = self._state.exchange_key
+
+        if round_id <= self._last_pruned_round:
+            return
+
+        min_round = round_id - 1
+        self._peers.prune(min_round)
+        self._last_pruned_round = round_id
 
     @staticmethod
     def _extract_uuid(event: list[bytes]) -> uuid.UUID | None:
@@ -266,23 +428,48 @@ class NetworkBackend:
         if len(event) < 3:
             return None
 
-        node_id_bytes = event[2]
+        value = event[2]
 
-        if not isinstance(node_id_bytes, bytes):
+        if not isinstance(value, bytes):
             return None
 
         try:
-            return node_id_bytes.decode("utf-8")
+            return value.decode("utf-8")
         except UnicodeDecodeError:
             return None
 
     @staticmethod
-    def _extract_state_message(event: list[bytes]) -> StateMessage | None:
+    def _extract_message_type(event: list[bytes]) -> str | None:
         if len(event) < 4:
             return None
 
+        value = event[3]
+
+        if not isinstance(value, bytes):
+            return None
+
         try:
-            return msgspec.msgpack.decode(event[3], type=StateMessage)
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return None
+
+    @staticmethod
+    def _extract_state(event: list[bytes]) -> State | None:
+        if len(event) < 5:
+            return None
+
+        try:
+            return msgspec.msgpack.decode(event[4], type=State)
+        except msgspec.DecodeError:
+            return None
+
+    @staticmethod
+    def _extract_request(event: list[bytes]) -> Request | None:
+        if len(event) < 5:
+            return None
+
+        try:
+            return msgspec.msgpack.decode(event[4], type=Request)
         except msgspec.DecodeError:
             return None
 
@@ -388,8 +575,8 @@ class Network:
 
         self._thread = None
 
-    def next_round(self) -> None:
-        self._state.advance_round()
+    def next_round(self) -> int:
+        return self._state.advance_round()
 
     def exchange(self, name: str, state: npt.NDArray) -> dict[str, npt.NDArray]:
         """
