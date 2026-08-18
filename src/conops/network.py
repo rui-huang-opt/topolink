@@ -21,16 +21,26 @@ class StateMeta(msgspec.Struct, frozen=True):
     shape: tuple[int, ...]
 
 
-class State(msgspec.Struct, frozen=True):
+class State(msgspec.Struct, tag="STATE", tag_field="type", frozen=True):
     round_id: int
     name: str
     meta: bytes
     payload: bytes
 
 
-class Request(msgspec.Struct, frozen=True):
+class Request(msgspec.Struct, tag="REQUEST", tag_field="type", frozen=True):
     round_id: int
     name: str
+
+
+class Sync(msgspec.Struct, tag="SYNC", tag_field="type", frozen=True):
+    round_id: int
+    name: str
+    meta: bytes
+    payload: bytes
+
+
+Message = State | Request | Sync
 
 
 @dataclass(slots=True)
@@ -50,12 +60,6 @@ class PeerRegistry:
         self._peers: dict[str, PeerInfo] = {}
         self._uuid_to_node_id: dict[uuid.UUID, str] = {}
 
-    def get_peer(self, node_id: str) -> PeerInfo | None:
-        return self._peers.get(node_id)
-
-    def get_peer_id_by_uuid(self, pyre_uuid: uuid.UUID) -> str | None:
-        return self._uuid_to_node_id.get(pyre_uuid)
-
     def get_or_create_peer(self, node_id: str) -> PeerInfo:
         peer = self._peers.get(node_id)
 
@@ -64,6 +68,17 @@ class PeerRegistry:
             self._peers[node_id] = peer
 
         return peer
+
+    def get_peer_id_by_uuid(self, pyre_uuid: uuid.UUID) -> str | None:
+        return self._uuid_to_node_id.get(pyre_uuid)
+
+    def get_uuid_by_peer_id(self, node_id: str) -> uuid.UUID | None:
+        peer = self._peers.get(node_id)
+
+        if peer is None or not peer.reachable or peer.pyre_uuid is None:
+            return None
+
+        return peer.pyre_uuid
 
     def mark_reachable(
         self, node_id: str, pyre_uuid: uuid.UUID, last_seen: float
@@ -103,20 +118,18 @@ class PeerRegistry:
 
 
 class ProtocolState:
-    def __init__(self, cache_rounds: int = 2) -> None:
-        if cache_rounds < 1:
-            raise ValueError("cache_rounds must be at least 1")
+    CACHE_ROUNDS = 2
 
+    def __init__(self) -> None:
         self._lock = threading.Lock()
 
         self._round_id = 0
-        self._exchange_name: str | None = None
-
-        self._cache_rounds = cache_rounds
+        self._name: str | None = None
 
         self._sent: dict[int, dict[str, State]] = {}
         self._received: dict[str, dict[tuple[int, str], State]] = {}
         self._delivered: dict[str, set[tuple[int, str]]] = {}
+        self._waiting: dict[str, tuple[int, str]] = {}
 
     @property
     def round_id(self) -> int:
@@ -126,27 +139,27 @@ class ProtocolState:
     @property
     def exchange_key(self) -> tuple[int, str | None]:
         with self._lock:
-            return self._round_id, self._exchange_name
+            return self._round_id, self._name
 
     def begin_exchange(self, name: str) -> tuple[int, str]:
         with self._lock:
-            if self._exchange_name is not None:
-                raise RuntimeError(f"Exchange already active: {self._exchange_name}")
+            if self._name is not None:
+                raise RuntimeError(f"Exchange already active: {self._name}")
 
-            self._exchange_name = name
+            self._name = name
 
             return self._round_id, name
 
     def end_exchange(self, name: str) -> None:
         with self._lock:
-            if self._exchange_name != name:
+            if self._name != name:
                 raise RuntimeError(f"Unexpected exchange end: {name}")
 
-            self._exchange_name = None
+            self._name = None
 
     def advance_round(self) -> int:
         with self._lock:
-            if self._exchange_name is not None:
+            if self._name is not None:
                 raise RuntimeError("Cannot advance round during an active exchange")
 
             self._round_id += 1
@@ -154,25 +167,24 @@ class ProtocolState:
 
             return self._round_id
 
-    def set_round(self, round_id: int) -> None:
+    def sync_round(self, round_id: int, name: str) -> None:
         with self._lock:
-            if self._exchange_name is not None:
-                raise RuntimeError("Cannot set round during an active exchange")
+            if self._name != name:
+                raise RuntimeError(f"Exchange mismatch: {name} != {self._name}")
 
-            if round_id < 0:
-                raise ValueError("round_id must be non-negative")
+            if round_id < self._round_id:
+                return
 
             self._round_id = round_id
             self._prune()
 
     def cache_sent(self, msg: State) -> None:
         with self._lock:
-            if msg.round_id != self._round_id:
-                raise RuntimeError(
-                    f"Round mismatch: {msg.round_id} != {self._round_id}"
-                )
+            round_id = msg.round_id
+            if round_id != self._round_id:
+                raise RuntimeError(f"Round mismatch: {round_id} != {self._round_id}")
 
-            self._sent.setdefault(msg.round_id, {})[msg.name] = msg
+            self._sent.setdefault(round_id, {})[msg.name] = msg
 
     def get_sent(self, round_id: int, name: str) -> State | None:
         with self._lock:
@@ -200,10 +212,10 @@ class ProtocolState:
         If a state is returned, it is atomically marked as delivered.
         """
         with self._lock:
-            if self._exchange_name is None:
+            if self._name is None:
                 return None
 
-            key = (self._round_id, self._exchange_name)
+            key = (self._round_id, self._name)
 
             messages = self._received.get(peer_id)
 
@@ -235,12 +247,12 @@ class ProtocolState:
         has not already been delivered.
         """
         with self._lock:
-            if self._exchange_name is None:
+            if self._name is None:
                 return False
 
             key = (msg.round_id, msg.name)
 
-            current_key = (self._round_id, self._exchange_name)
+            current_key = (self._round_id, self._name)
 
             if key != current_key:
                 return False
@@ -260,8 +272,28 @@ class ProtocolState:
 
             return True
 
+    def begin_wait(self, peer_id: str) -> None:
+        with self._lock:
+            if self._name is None:
+                raise RuntimeError("No active exchange")
+
+            self._waiting[peer_id] = (self._round_id, self._name)
+
+    def is_waiting(self, peer_id: str, msg: State) -> bool:
+        with self._lock:
+            return self._waiting.get(peer_id) == (msg.round_id, msg.name)
+
+    def finish_wait(self, peer_id: str, msg: State) -> None:
+        with self._lock:
+            key = (msg.round_id, msg.name)
+
+            if self._waiting.get(peer_id) == key:
+                self._waiting.pop(peer_id, None)
+
+            self._delivered.setdefault(peer_id, set()).add(key)
+
     def _prune(self) -> None:
-        min_round = max(0, self._round_id - self._cache_rounds + 1)
+        min_round = max(0, self._round_id - self.CACHE_ROUNDS + 1)
 
         self._sent = {
             round_id: messages
@@ -270,14 +302,14 @@ class ProtocolState:
         }
 
         for peer_id in list(self._received):
-            messages = {
+            received = {
                 key: msg
                 for key, msg in self._received[peer_id].items()
                 if key[0] >= min_round
             }
 
-            if messages:
-                self._received[peer_id] = messages
+            if received:
+                self._received[peer_id] = received
             else:
                 self._received.pop(peer_id, None)
 
@@ -349,22 +381,21 @@ class NetworkBackend:
 
         self._state.cache_sent(msg)
 
+        self._state.begin_wait(peer_id)
+
         peer = self._peers.get_or_create_peer(peer_id)
 
-        # The neighbor's corresponding state may have arrived before the
-        # frontend started this exchange.
         received = self._state.take_received(peer_id)
 
         if received is not None:
             self._forward_to_frontend(peer_id, received)
+            self._state.finish_wait(peer_id, received)
 
-        # Send our state independently of whether the peer's state was
-        # already cached locally.
         if not peer.reachable or peer.pyre_uuid is None:
             peer.pending.append(msg)
             return
 
-        self._send_state(peer.pyre_uuid, msg)
+        self._send_message(peer.pyre_uuid, msg)
 
     def _handle_enter(self, event: list[bytes], timestamp: float) -> None:
         pyre_uuid = self._extract_uuid(event)
@@ -384,7 +415,7 @@ class NetworkBackend:
         )
 
         for msg in peer.pending:
-            self._send_state(pyre_uuid, msg)
+            self._send_message(pyre_uuid, msg)
 
         peer.pending.clear()
 
@@ -398,47 +429,73 @@ class NetworkBackend:
 
     def _handle_whisper(self, event: list[bytes]) -> None:
         peer_id = self._extract_node_id(event)
-        message_type = self._extract_message_type(event)
+        msg = self._extract_message(event)
 
-        if peer_id is None or message_type is None:
+        if peer_id is None or msg is None:
             return
 
-        if message_type == "STATE":
-            msg = self._extract_state(event)
+        if isinstance(msg, State):
+            self._handle_state(peer_id, msg)
 
-            if msg is not None:
-                self._handle_state(peer_id, msg)
+        elif isinstance(msg, Request):
+            self._handle_request(peer_id, msg)
 
-        elif message_type == "REQUEST":
-            request = self._extract_request(event)
-
-            if request is not None:
-                self._handle_request(peer_id, request)
-
-        else:
-            logger.debug("[%s] Ignoring message type: %s", self._node_id, message_type)
+        elif isinstance(msg, Sync):
+            self._handle_sync(peer_id, msg)
 
     def _handle_state(self, peer_id: str, msg: State) -> None:
         local_round, local_name = self._state.exchange_key
 
-        # Exactly the state currently requested by frontend.
+        if local_name is None:
+            self._state.cache_received(peer_id, msg)
+            return
+
+        # 1. 正常当前消息
         if msg.round_id == local_round and msg.name == local_name:
-            if self._state.claim_delivery(peer_id, msg):
+            if self._state.is_waiting(peer_id, msg):
                 self._forward_to_frontend(peer_id, msg)
-
+                self._state.finish_wait(peer_id, msg)
+            else:
+                self._state.cache_received(peer_id, msg)
             return
 
-        # Peer is behind our current round.
+        # 2. peer 落后：restart / catch-up
         if msg.round_id < local_round:
-            self._handle_behind_peer(peer_id, msg)
+            promoted = State(
+                round_id=local_round,
+                name=local_name,
+                meta=msg.meta,
+                payload=msg.payload,
+            )
+
+            if self._state.is_waiting(peer_id, promoted):
+                self._forward_to_frontend(peer_id, promoted)
+                self._state.finish_wait(peer_id, promoted)
+            else:
+                self._state.cache_received(peer_id, promoted)
+
+            current = self._state.get_sent(round_id=local_round, name=local_name)
+
+            if current is None:
+                return
+
+            pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
+
+            if pyre_uuid is None:
+                return
+
+            sync = Sync(
+                round_id=local_round,
+                name=local_name,
+                meta=current.meta,
+                payload=current.payload,
+            )
+
+            self._send_message(pyre_uuid, sync)
             return
 
-        # Peer is ahead, or it is in a different exchange of the
-        # same round. Save the state so it can be consumed later.
+        # 3. peer ahead / 同轮不同 exchange
         self._state.cache_received(peer_id, msg)
-
-        # If we currently need something from this peer, ask for it.
-        self._request_current_state(peer_id)
 
     def _handle_request(self, peer_id: str, request: Request) -> None:
         sent = self._state.get_sent(round_id=request.round_id, name=request.name)
@@ -446,25 +503,78 @@ class NetworkBackend:
         if sent is None:
             return
 
-        peer = self._peers.get_peer(peer_id)
+        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
 
-        if peer is None or not peer.reachable or peer.pyre_uuid is None:
+        if pyre_uuid is None:
             return
 
-        self._send_state(peer.pyre_uuid, sent)
+        self._send_message(pyre_uuid, sent)
+
+    def _handle_sync(self, peer_id: str, sync: Sync) -> None:
+        local_round, local_name = self._state.exchange_key
+
+        if local_name != sync.name:
+            return
+
+        if sync.round_id < local_round:
+            return
+
+        if sync.round_id > local_round:
+            self._state.sync_round(
+                round_id=sync.round_id,
+                name=sync.name,
+            )
+
+        msg = State(
+            round_id=sync.round_id,
+            name=sync.name,
+            meta=sync.meta,
+            payload=sync.payload,
+        )
+
+        if self._state.claim_delivery(peer_id, msg):
+            self._forward_to_frontend(peer_id, msg)
 
     def _handle_behind_peer(self, peer_id: str, msg: State) -> None:
-        sent = self._state.get_sent(round_id=msg.round_id, name=msg.name)
+        local_round, local_name = self._state.exchange_key
 
-        if sent is None:
+        if local_name is None:
             return
 
-        peer = self._peers.get_peer(peer_id)
-
-        if peer is None or not peer.reachable or peer.pyre_uuid is None:
+        # 第一版只对相同 exchange 做直接 rejoin。
+        if msg.name != local_name:
+            self._state.cache_received(peer_id, msg)
+            self._request_current_state(peer_id)
             return
 
-        self._send_state(peer.pyre_uuid, sent)
+        # 把重启节点的旧状态提升为“当前 round 的状态”。
+        promoted = State(
+            round_id=local_round, name=local_name, meta=msg.meta, payload=msg.payload
+        )
+
+        if self._state.claim_delivery(peer_id, promoted):
+            self._forward_to_frontend(peer_id, promoted)
+
+        # 把我自己当前 round 的状态发给重启节点，
+        # 告诉它直接同步到这里。
+        current = self._state.get_sent(round_id=local_round, name=local_name)
+
+        if current is None:
+            return
+
+        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
+
+        if pyre_uuid is None:
+            return
+
+        sync = Sync(
+            round_id=local_round,
+            name=local_name,
+            meta=current.meta,
+            payload=current.payload,
+        )
+
+        self._send_message(pyre_uuid, sync)
 
     def _request_current_state(self, peer_id: str) -> None:
         round_id, name = self._state.exchange_key
@@ -472,23 +582,20 @@ class NetworkBackend:
         if name is None:
             return
 
-        peer = self._peers.get_peer(peer_id)
+        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
 
-        if peer is None or not peer.reachable or peer.pyre_uuid is None:
+        if pyre_uuid is None:
             return
 
         request = Request(round_id=round_id, name=name)
 
-        self._send_request(peer.pyre_uuid, request)
+        self._send_message(pyre_uuid, request)
 
     def _forward_to_frontend(self, peer_id: str, msg: State) -> None:
         self._router.send_multipart([peer_id.encode("utf-8"), msg.meta, msg.payload])
 
-    def _send_state(self, pyre_uuid: uuid.UUID, msg: State) -> None:
-        self._node.whisper(pyre_uuid, [b"STATE", msgspec.msgpack.encode(msg)])
-
-    def _send_request(self, pyre_uuid: uuid.UUID, request: Request) -> None:
-        self._node.whisper(pyre_uuid, [b"REQUEST", msgspec.msgpack.encode(request)])
+    def _send_message(self, pyre_uuid: uuid.UUID, msg: Message) -> None:
+        self._node.whisper(pyre_uuid, msgspec.msgpack.encode(msg))
 
     @staticmethod
     def _extract_uuid(event: list[bytes]) -> uuid.UUID | None:
@@ -533,22 +640,12 @@ class NetworkBackend:
             return None
 
     @staticmethod
-    def _extract_state(event: list[bytes]) -> State | None:
-        if len(event) < 5:
+    def _extract_message(event: list[bytes]) -> Message | None:
+        if len(event) < 4:
             return None
 
         try:
-            return msgspec.msgpack.decode(event[4], type=State)
-        except msgspec.DecodeError:
-            return None
-
-    @staticmethod
-    def _extract_request(event: list[bytes]) -> Request | None:
-        if len(event) < 5:
-            return None
-
-        try:
-            return msgspec.msgpack.decode(event[4], type=Request)
+            return msgspec.msgpack.decode(event[3], type=Message)
         except msgspec.DecodeError:
             return None
 
