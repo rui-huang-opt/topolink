@@ -68,8 +68,8 @@ class Quantize:
 
     Parameters
     ----------
-    scale : float
-        The scale factor for quantization.
+    dtype : str, optional
+        The target integer data type for quantization. Default is 'int8'.
     """
 
     def __init__(self, dtype: str = "int8"):

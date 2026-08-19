@@ -669,6 +669,42 @@ class NetworkBackend:
 
 
 class Network:
+    """
+    Synchronous communication interface backed by an asynchronous network layer.
+
+    Each network instance represents one node and communicates with its
+    weighted neighbors through local ZeroMQ DEALER sockets and a background
+    Pyre-based communication thread.
+
+    Parameters
+    ----------
+    node_id : str
+        Unique identifier of the local node.
+
+    neighbors : dict[str, float]
+        Mapping from neighbor node IDs to their associated edge weights.
+
+    namespace : str, optional
+        Namespace used to isolate independent network instances.
+        Defaults to ``"default"``.
+
+    transform : Transform | None, optional
+        Transformation applied to exchanged states. If ``None``,
+        :class:`Identity` is used.
+
+    recv_timeout_ms : int, optional
+        Polling timeout of the background network loop, in milliseconds.
+        Defaults to ``200``.
+
+    stop_timeout : float, optional
+        Maximum time to wait for the background thread to stop, in seconds.
+        Defaults to ``1.0``.
+
+    context : zmq.SyncContext | None, optional
+        ZeroMQ context used by the network. If ``None``, the process-wide
+        shared context returned by :meth:`zmq.Context.instance` is used.
+    """
+
     def __init__(
         self,
         node_id: str,
