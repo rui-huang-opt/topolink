@@ -39,7 +39,7 @@ def consensus(
         k = network.round_id
 
         while k < n_iter - 1:
-            x[k + 1] = network.weighted_mix("x", x[k])
+            x[k + 1] = network.weighted_mix(x[k])
 
             k = network.next_round()
 

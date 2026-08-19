@@ -46,8 +46,8 @@ def consensus(
         k = network.round_id
 
         while k < n_iter - 1:
-            x[k + 1] = x[k] - network.laplacian("x", x[k]) * alpha1
-            y[k + 1] = y[k] - network.laplacian("y", y[k]) * alpha2
+            x[k + 1] = x[k] - network.laplacian(x[k]) * alpha1
+            y[k + 1] = y[k] - network.laplacian(y[k]) * alpha2
 
             k = network.next_round()
 

@@ -18,24 +18,24 @@ logger = logging.getLogger(__name__)
 
 class State(msgspec.Struct, tag="STATE", tag_field="type", frozen=True):
     round_id: int
-    name: str
+    exchange_id: int
     meta: bytes
     payload: bytes
 
 
-class Request(msgspec.Struct, tag="REQUEST", tag_field="type", frozen=True):
+class Recover(msgspec.Struct, tag="RECOVER", tag_field="type", frozen=True):
     round_id: int
-    name: str
+    exchange_id: int
 
 
-class Sync(msgspec.Struct, tag="SYNC", tag_field="type", frozen=True):
+class Replay(msgspec.Struct, tag="REPLAY", tag_field="type", frozen=True):
     round_id: int
-    name: str
+    exchange_id: int
     meta: bytes
     payload: bytes
 
 
-Message = State | Request | Sync
+Message = State | Recover | Replay
 
 
 @dataclass(slots=True)
@@ -43,7 +43,6 @@ class PeerInfo:
     pyre_uuid: uuid.UUID | None = None
     last_seen: float = 0.0
     reachable: bool = False
-    pending: list[State] = field(default_factory=list)
 
 
 class PeerRegistry:
@@ -113,18 +112,32 @@ class PeerRegistry:
 
 
 class Exchange:
-    CACHE_ROUNDS = 2
+    """
+    Manages exchange progress and message state across communication rounds.
+
+    Tracks the current round and exchange identifiers, outgoing and incoming
+    states, outstanding frontend receives, and recovery-related state needed
+    to replay or resume interrupted exchanges.
+    """
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
 
         self._round_id = 0
-        self._name: str | None = None
+        self._exchange_id = 0
+        self._active = False
 
-        self._sent: dict[int, dict[str, State]] = {}
-        self._received: dict[str, dict[tuple[int, str], State]] = {}
-        self._delivered: dict[str, set[tuple[int, str]]] = {}
-        self._waiting: dict[str, tuple[int, str]] = {}
+        # Current-round states sent to each peer.
+        # States received before the frontend is ready for them.
+        # peer_id -> (round_id, exchange_id) -> state
+        self._sent: dict[str, dict[tuple[int, int], State]] = {}
+        self._received: dict[str, dict[tuple[int, int], State]] = {}
+
+        # Latest state already forwarded to the frontend for each peer.
+        # Outstanding frontend receive for each peer.
+        # peer_id -> (round_id, exchange_id)
+        self._delivered: dict[str, tuple[int, int]] = {}
+        self._waiting: dict[str, tuple[int, int]] = {}
 
     @property
     def round_id(self) -> int:
@@ -132,189 +145,203 @@ class Exchange:
             return self._round_id
 
     @property
-    def key(self) -> tuple[int, str | None]:
+    def exchange_id(self) -> int:
         with self._lock:
-            return self._round_id, self._name
+            return self._exchange_id
 
-    def begin(self, name: str) -> tuple[int, str]:
+    @property
+    def progress(self) -> tuple[int, int]:
         with self._lock:
-            if self._name is not None:
-                raise RuntimeError(f"Exchange already active: {self._name}")
+            return self._round_id, self._exchange_id
 
-            self._name = name
-
-            return self._round_id, name
-
-    def end(self, name: str) -> None:
+    @property
+    def sent_peers(self) -> tuple[str, ...]:
         with self._lock:
-            if self._name != name:
-                raise RuntimeError(f"Unexpected exchange end: {name}")
+            return tuple(self._sent)
 
-            self._name = None
+    @property
+    def waiting_peers(self) -> tuple[str, ...]:
+        with self._lock:
+            return tuple(self._waiting)
+
+    def begin(self) -> tuple[int, int]:
+        with self._lock:
+            if self._active:
+                raise RuntimeError("Exchange already active")
+
+            self._active = True
+
+            return self._round_id, self._exchange_id
+
+    def end(self) -> tuple[int, int]:
+        with self._lock:
+            if not self._active:
+                raise RuntimeError("No active exchange")
+
+            self._active = False
+            self._exchange_id += 1
+
+            return self._round_id, self._exchange_id
 
     def advance_round(self) -> int:
         with self._lock:
-            if self._name is not None:
+            if self._active:
                 raise RuntimeError("Cannot advance round during an active exchange")
 
             self._round_id += 1
-            self._prune()
+            self._exchange_id = 0
+
+            # Replay is only needed within the current round.
+            self._sent.clear()
+
+            # Previous-round delivery bookkeeping is no longer useful.
+            self._delivered.clear()
+
+            if self._waiting:
+                raise RuntimeError(
+                    f"Cannot advance round with outstanding waits: "
+                    f"{tuple(self._waiting)}"
+                )
+
+            # Keep only messages from the new round or future rounds.
+            self._prune_received()
 
             return self._round_id
 
-    def sync_round(self, round_id: int, name: str) -> None:
-        with self._lock:
-            if self._name != name:
-                raise RuntimeError(f"Exchange mismatch: {name} != {self._name}")
+    def recover_round(self, round_id: int) -> bool:
+        """
+        Jumps directly to a newer round and restarts that round from
+        exchange 0.
 
-            if round_id < self._round_id:
-                return
+        States already forwarded to the frontend are never rolled back.
+        Outstanding receives and current outgoing states are rebased to
+        the recovered round.
+        """
+        with self._lock:
+            if round_id <= self._round_id:
+                return False
+
+            old_progress = (self._round_id, self._exchange_id)
+
+            # Preserve all outgoing states of the current exchange.
+            sent_states: dict[str, State] = {}
+
+            for peer_id, messages in self._sent.items():
+                msg = messages.get(old_progress)
+
+                if msg is not None:
+                    sent_states[peer_id] = msg
 
             self._round_id = round_id
-            self._prune()
+            self._exchange_id = 0
 
-    def cache_sent(self, msg: State) -> None:
-        with self._lock:
-            round_id = msg.round_id
-            if round_id != self._round_id:
-                raise RuntimeError(f"Round mismatch: {round_id} != {self._round_id}")
+            new_progress = (self._round_id, self._exchange_id)
 
-            self._sent.setdefault(round_id, {})[msg.name] = msg
+            # Old-round replay history is abandoned.
+            self._sent.clear()
 
-    def get_sent(self, round_id: int, name: str) -> State | None:
-        with self._lock:
-            messages = self._sent.get(round_id)
+            # Rebase every current outgoing state.
+            for peer_id, msg in sent_states.items():
+                recovered = State(
+                    round_id=new_progress[0],
+                    exchange_id=new_progress[1],
+                    meta=msg.meta,
+                    payload=msg.payload,
+                )
 
-            if messages is None:
-                return None
+                self._sent.setdefault(peer_id, {})[new_progress] = recovered
 
-            return messages.get(name)
+            # Only outstanding frontend receives are rebased.
+            for peer_id, progress in self._waiting.items():
+                if progress == old_progress:
+                    self._waiting[peer_id] = new_progress
 
-    def cache_received(self, peer_id: str, msg: State) -> None:
-        with self._lock:
-            key = (msg.round_id, msg.name)
-
-            # A duplicate of something already delivered is useless.
-            if key in self._delivered.get(peer_id, set()):
-                return
-
-            self._received.setdefault(peer_id, {})[key] = msg
-
-    def take_received(self, peer_id: str) -> State | None:
-        """
-        Returns a previously received state matching the current exchange.
-
-        If a state is returned, it is atomically marked as delivered.
-        """
-        with self._lock:
-            if self._name is None:
-                return None
-
-            key = (self._round_id, self._name)
-
-            messages = self._received.get(peer_id)
-
-            if messages is None:
-                return None
-
-            # If this exchange has already been delivered, discard any
-            # duplicate cached copy.
-            delivered = self._delivered.get(peer_id)
-
-            if delivered is not None and key in delivered:
-                messages.pop(key, None)
-                return None
-
-            msg = messages.pop(key, None)
-
-            if msg is None:
-                return None
-
-            self._delivered.setdefault(peer_id, set()).add(key)
-
-            return msg
-
-    def claim_delivery(self, peer_id: str, msg: State) -> bool:
-        """
-        Claims a received state for delivery to the frontend.
-
-        Returns True only when the state matches the current exchange and
-        has not already been delivered.
-        """
-        with self._lock:
-            if self._name is None:
-                return False
-
-            key = (msg.round_id, msg.name)
-
-            current_key = (self._round_id, self._name)
-
-            if key != current_key:
-                return False
-
-            delivered = self._delivered.setdefault(peer_id, set())
-
-            if key in delivered:
-                return False
-
-            delivered.add(key)
-
-            # Remove an equivalent cached copy if one exists.
-            messages = self._received.get(peer_id)
-
-            if messages is not None:
-                messages.pop(key, None)
+            self._prune_received()
 
             return True
 
+    def cache_sent(self, peer_id: str, msg: State) -> None:
+        with self._lock:
+            progress = (msg.round_id, msg.exchange_id)
+
+            current = (self._round_id, self._exchange_id)
+
+            if progress != current:
+                raise RuntimeError(f"Exchange mismatch: {progress} != {current}")
+
+            self._sent.setdefault(peer_id, {})[progress] = msg
+
+    def get_sent(self, peer_id: str, progress: tuple[int, int]) -> State | None:
+        with self._lock:
+            messages = self._sent.get(peer_id)
+
+            if messages is None:
+                return None
+
+            return messages.get(progress)
+
+    def cache_received(self, peer_id: str, msg: State) -> None:
+        with self._lock:
+            progress = (msg.round_id, msg.exchange_id)
+
+            delivered = self._delivered.get(peer_id)
+            if delivered is not None and progress <= delivered:
+                return
+
+            self._received.setdefault(peer_id, {})[progress] = msg
+
+    def take_received(self, peer_id: str) -> State | None:
+        with self._lock:
+            progress = (self._round_id, self._exchange_id)
+
+            messages = self._received.get(peer_id)
+
+            if messages is None:
+                return None
+
+            delivered = self._delivered.get(peer_id)
+            if delivered is not None and progress <= delivered:
+                messages.pop(progress, None)
+                return None
+
+            return messages.pop(progress, None)
+
     def begin_wait(self, peer_id: str) -> None:
         with self._lock:
-            if self._name is None:
+            if not self._active:
                 raise RuntimeError("No active exchange")
 
-            self._waiting[peer_id] = (self._round_id, self._name)
+            self._waiting[peer_id] = (self._round_id, self._exchange_id)
 
     def is_waiting(self, peer_id: str, msg: State) -> bool:
         with self._lock:
-            return self._waiting.get(peer_id) == (msg.round_id, msg.name)
+            return self._waiting.get(peer_id) == (msg.round_id, msg.exchange_id)
 
     def finish_wait(self, peer_id: str, msg: State) -> None:
         with self._lock:
-            key = (msg.round_id, msg.name)
+            progress = (msg.round_id, msg.exchange_id)
 
-            if self._waiting.get(peer_id) == key:
-                self._waiting.pop(peer_id, None)
+            if self._waiting.get(peer_id) != progress:
+                return
 
-            self._delivered.setdefault(peer_id, set()).add(key)
+            self._waiting.pop(peer_id, None)
 
-    def _prune(self) -> None:
-        min_round = max(0, self._round_id - self.CACHE_ROUNDS + 1)
+            self._delivered[peer_id] = progress
 
-        self._sent = {
-            round_id: messages
-            for round_id, messages in self._sent.items()
-            if round_id >= min_round
-        }
+    def clear_received(self, peer_id: str) -> None:
+        with self._lock:
+            self._received.pop(peer_id, None)
 
+    def _prune_received(self) -> None:
         for peer_id in list(self._received):
-            received = {
-                key: msg
-                for key, msg in self._received[peer_id].items()
-                if key[0] >= min_round
-            }
+            messages = self._received[peer_id]
 
-            if received:
-                self._received[peer_id] = received
-            else:
+            for progress in list(messages):
+                if progress[0] < self._round_id:
+                    messages.pop(progress, None)
+
+            if not messages:
                 self._received.pop(peer_id, None)
-
-        for peer_id in list(self._delivered):
-            delivered = {key for key in self._delivered[peer_id] if key[0] >= min_round}
-
-            if delivered:
-                self._delivered[peer_id] = delivered
-            else:
-                self._delivered.pop(peer_id, None)
 
 
 class NetworkBackend:
@@ -354,9 +381,6 @@ class NetworkBackend:
         elif event_type == "WHISPER":
             self._handle_whisper(event)
 
-        else:
-            logger.debug("[%s] Ignoring Pyre event: %s", self._node_id, event_type)
-
     def handle_frontend_message(self, frames: list[bytes]) -> None:
         if len(frames) != 3:
             return
@@ -368,31 +392,28 @@ class NetworkBackend:
         except UnicodeDecodeError:
             return
 
-        round_id, name = self._exchange.key
+        round_id, exchange_id = self._exchange.progress
 
-        if name is None:
-            logger.warning("[%s] No active exchange", self._node_id)
-            return
+        msg = State(
+            round_id=round_id,
+            exchange_id=exchange_id,
+            meta=meta,
+            payload=payload,
+        )
 
-        msg = State(round_id=round_id, name=name, meta=meta, payload=payload)
-
-        self._exchange.cache_sent(msg)
+        self._exchange.cache_sent(peer_id, msg)
 
         self._exchange.begin_wait(peer_id)
 
-        peer = self._peers.get_or_create_peer(peer_id)
-
+        # A matching message may have arrived before the frontend
+        # started waiting for this peer.
         received = self._exchange.take_received(peer_id)
 
         if received is not None:
-            self._forward_to_frontend(peer_id, received)
             self._exchange.finish_wait(peer_id, received)
+            self._forward_to_frontend(peer_id, received)
 
-        if not peer.reachable or peer.pyre_uuid is None:
-            peer.pending.append(msg)
-            return
-
-        self._send_message(peer.pyre_uuid, msg)
+        self._send_message(peer_id, msg)
 
     def _handle_enter(self, event: list[bytes], timestamp: float) -> None:
         pyre_uuid = self._extract_uuid(event)
@@ -410,16 +431,24 @@ class NetworkBackend:
         if namespace != self._namespace:
             return
 
-        peer = self._peers.mark_reachable(
+        peer = self._peers.get_or_create_peer(peer_id)
+
+        restarted = peer.pyre_uuid is not None and peer.pyre_uuid != pyre_uuid
+
+        self._peers.mark_reachable(
             node_id=peer_id,
             pyre_uuid=pyre_uuid,
             last_seen=timestamp,
         )
 
-        for msg in peer.pending:
-            self._send_message(pyre_uuid, msg)
+        if restarted:
+            self._exchange.clear_received(peer_id)
 
-        peer.pending.clear()
+        progress = self._exchange.progress
+        msg = self._exchange.get_sent(peer_id, progress)
+
+        if msg is not None:
+            self._send_message_by_uuid(pyre_uuid, msg)
 
     def _handle_exit(self, event: list[bytes], timestamp: float) -> None:
         pyre_uuid = self._extract_uuid(event)
@@ -431,172 +460,132 @@ class NetworkBackend:
 
     def _handle_whisper(self, event: list[bytes]) -> None:
         peer_id = self._extract_node_id(event)
+
+        if peer_id is None:
+            return
+
         msg = self._extract_message(event)
 
-        if peer_id is None or msg is None:
+        if msg is None:
             return
 
         if isinstance(msg, State):
             self._handle_state(peer_id, msg)
 
-        elif isinstance(msg, Request):
-            self._handle_request(peer_id, msg)
+        elif isinstance(msg, Recover):
+            self._handle_recover(msg)
 
-        elif isinstance(msg, Sync):
-            self._handle_sync(peer_id, msg)
+        elif isinstance(msg, Replay):
+            self._handle_replay(peer_id, msg)
 
     def _handle_state(self, peer_id: str, msg: State) -> None:
-        local_round, local_name = self._exchange.key
+        local = self._exchange.progress
+        remote = (msg.round_id, msg.exchange_id)
 
-        if local_name is None:
-            self._exchange.cache_received(peer_id, msg)
+        if remote == local:
+            self._deliver_or_cache(peer_id, msg)
             return
 
-        # 1. 正常当前消息
-        if msg.round_id == local_round and msg.name == local_name:
-            if self._exchange.is_waiting(peer_id, msg):
-                self._forward_to_frontend(peer_id, msg)
-                self._exchange.finish_wait(peer_id, msg)
+        if remote < local:
+            # Cross-round lag.
+            if msg.round_id < local[0]:
+                recover = Recover(round_id=local[0], exchange_id=local[1])
+                self._send_message(peer_id, recover)
+                progress = (local[0], 0)
+
+            # Same-round lag.
             else:
-                self._exchange.cache_received(peer_id, msg)
+                progress = remote
+
+            cached = self._exchange.get_sent(peer_id, progress)
+
+            if cached is not None:
+                replay = Replay(
+                    round_id=cached.round_id,
+                    exchange_id=cached.exchange_id,
+                    meta=cached.meta,
+                    payload=cached.payload,
+                )
+                self._send_message(peer_id, replay)
+
             return
 
-        # 2. peer 落后：restart / catch-up
-        if msg.round_id < local_round:
-            promoted = State(
-                round_id=local_round,
-                name=local_name,
-                meta=msg.meta,
-                payload=msg.payload,
-            )
-
-            if self._exchange.is_waiting(peer_id, promoted):
-                self._forward_to_frontend(peer_id, promoted)
-                self._exchange.finish_wait(peer_id, promoted)
-            else:
-                self._exchange.cache_received(peer_id, promoted)
-
-            current = self._exchange.get_sent(round_id=local_round, name=local_name)
-
-            if current is None:
-                return
-
-            pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
-
-            if pyre_uuid is None:
-                return
-
-            sync = Sync(
-                round_id=local_round,
-                name=local_name,
-                meta=current.meta,
-                payload=current.payload,
-            )
-
-            self._send_message(pyre_uuid, sync)
-            return
-
-        # 3. peer ahead / 同轮不同 exchange
+        # Peer is ahead.
         self._exchange.cache_received(peer_id, msg)
 
-    def _handle_request(self, peer_id: str, request: Request) -> None:
-        sent = self._exchange.get_sent(round_id=request.round_id, name=request.name)
+    def _handle_recover(self, recover: Recover) -> None:
+        before = self._exchange.progress
 
-        if sent is None:
+        if recover.round_id <= before[0]:
             return
 
-        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
+        changed = self._exchange.recover_round(recover.round_id)
 
-        if pyre_uuid is None:
-            return
+        if changed:
+            self._drain_received()
+            self._resend_current()
 
-        self._send_message(pyre_uuid, sent)
-
-    def _handle_sync(self, peer_id: str, sync: Sync) -> None:
-        local_round, local_name = self._exchange.key
-
-        if local_name != sync.name:
-            return
-
-        if sync.round_id < local_round:
-            return
-
-        if sync.round_id > local_round:
-            self._exchange.sync_round(
-                round_id=sync.round_id,
-                name=sync.name,
-            )
-
+    def _handle_replay(self, peer_id: str, replay: Replay) -> None:
         msg = State(
-            round_id=sync.round_id,
-            name=sync.name,
-            meta=sync.meta,
-            payload=sync.payload,
+            round_id=replay.round_id,
+            exchange_id=replay.exchange_id,
+            meta=replay.meta,
+            payload=replay.payload,
         )
 
-        if self._exchange.claim_delivery(peer_id, msg):
+        local = self._exchange.progress
+        remote = (replay.round_id, replay.exchange_id)
+
+        if remote == local:
+            self._deliver_or_cache(peer_id, msg)
+            return
+
+        if remote > local:
+            self._exchange.cache_received(peer_id, msg)
+
+        # remote < local:
+        # replay 已经过期，直接丢。
+
+    def _drain_received(self) -> None:
+        for peer_id in self._exchange.waiting_peers:
+            msg = self._exchange.take_received(peer_id)
+
+            if msg is None:
+                continue
+
+            self._exchange.finish_wait(peer_id, msg)
             self._forward_to_frontend(peer_id, msg)
 
-    def _handle_behind_peer(self, peer_id: str, msg: State) -> None:
-        local_round, local_name = self._exchange.key
+    def _resend_current(self) -> None:
+        progress = self._exchange.progress
 
-        if local_name is None:
-            return
+        for peer_id in self._exchange.sent_peers:
+            msg = self._exchange.get_sent(peer_id, progress)
 
-        # 第一版只对相同 exchange 做直接 rejoin。
-        if msg.name != local_name:
+            if msg is None:
+                continue
+
+            self._send_message(peer_id, msg)
+
+    def _deliver_or_cache(self, peer_id: str, msg: State) -> None:
+        if self._exchange.is_waiting(peer_id, msg):
+            self._exchange.finish_wait(peer_id, msg)
+            self._forward_to_frontend(peer_id, msg)
+        else:
             self._exchange.cache_received(peer_id, msg)
-            self._request_current_state(peer_id)
-            return
-
-        # 把重启节点的旧状态提升为“当前 round 的状态”。
-        promoted = State(
-            round_id=local_round, name=local_name, meta=msg.meta, payload=msg.payload
-        )
-
-        if self._exchange.claim_delivery(peer_id, promoted):
-            self._forward_to_frontend(peer_id, promoted)
-
-        # 把我自己当前 round 的状态发给重启节点，
-        # 告诉它直接同步到这里。
-        current = self._exchange.get_sent(round_id=local_round, name=local_name)
-
-        if current is None:
-            return
-
-        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
-
-        if pyre_uuid is None:
-            return
-
-        sync = Sync(
-            round_id=local_round,
-            name=local_name,
-            meta=current.meta,
-            payload=current.payload,
-        )
-
-        self._send_message(pyre_uuid, sync)
-
-    def _request_current_state(self, peer_id: str) -> None:
-        round_id, name = self._exchange.key
-
-        if name is None:
-            return
-
-        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
-
-        if pyre_uuid is None:
-            return
-
-        request = Request(round_id=round_id, name=name)
-
-        self._send_message(pyre_uuid, request)
 
     def _forward_to_frontend(self, peer_id: str, msg: State) -> None:
         self._router.send_multipart([peer_id.encode("utf-8"), msg.meta, msg.payload])
 
-    def _send_message(self, pyre_uuid: uuid.UUID, msg: Message) -> None:
+    def _send_message(self, peer_id: str, msg: Message) -> None:
+        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
+
+        if pyre_uuid is None:
+            return
+
+        self._node.whisper(pyre_uuid, msgspec.msgpack.encode(msg))
+
+    def _send_message_by_uuid(self, pyre_uuid: uuid.UUID, msg: Message) -> None:
         self._node.whisper(pyre_uuid, msgspec.msgpack.encode(msg))
 
     @staticmethod
@@ -638,23 +627,10 @@ class NetworkBackend:
 
         try:
             headers = msgspec.json.decode(candidate, type=dict[str, str])
+
             return headers.get("namespace")
+
         except msgspec.DecodeError:
-            return None
-
-    @staticmethod
-    def _extract_message_type(event: list[bytes]) -> str | None:
-        if len(event) < 4:
-            return None
-
-        value = event[3]
-
-        if not isinstance(value, bytes):
-            return None
-
-        try:
-            return value.decode("utf-8")
-        except UnicodeDecodeError:
             return None
 
     @staticmethod
@@ -747,8 +723,7 @@ class Network:
 
     @property
     def round_id(self) -> int:
-        round_id, _ = self._exchange.key
-        return round_id
+        return self._exchange.round_id
 
     def start(self) -> None:
         if self._thread is not None and self._thread.is_alive():
@@ -806,36 +781,40 @@ class Network:
         self._thread = None
 
     def next_round(self) -> int:
+        """
+        Advances the network to the next communication round.
+
+        Returns:
+            int: The new round identifier.
+        """
         return self._exchange.advance_round()
 
     def neighborwise_exchange(
-        self, name: str, value_map: dict[str, npt.NDArray]
+        self, state_map: dict[str, npt.NDArray]
     ) -> dict[str, npt.NDArray]:
         """
-        Exchanges the given value map with all neighbor nodes.
+        Exchanges the given state map with all neighbor nodes.
 
-        This method broadcasts the value map to all neighbors and then gathers their values.
+        This method broadcasts the state map to all neighbors and then gathers their states.
 
         Args:
-            name (str): The name of the variable to be exchanged.
-
-            value_map (dict[str, NDArray[np.float64]]): The value map to exchange with neighbors.
+            state_map (dict[str, NDArray[np.float64]]): The state map to exchange with neighbors.
 
         Returns:
-            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received value maps.
+            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state maps.
         """
-        if value_map.keys() != self._neighbors.keys():
-            missing = self._neighbors.keys() - value_map.keys()
-            extra = value_map.keys() - self._neighbors.keys()
+        if state_map.keys() != self._neighbors.keys():
+            missing = self._neighbors.keys() - state_map.keys()
+            extra = state_map.keys() - self._neighbors.keys()
             raise ValueError(
-                "Value dictionary keys do not match neighbor names. "
+                "State dictionary keys do not match neighbor names. "
                 f"Missing: {missing}, Extra: {extra}."
             )
 
-        self._exchange.begin(name)
+        self._exchange.begin()
 
         for j in self._neighbors:
-            state = value_map[j]
+            state = state_map[j]
             meta, payload = self._transform.encode(state)
             payload = np.ascontiguousarray(payload)
             dealer = self._dealers[j]
@@ -847,27 +826,25 @@ class Network:
             meta, payload = dealer.recv_multipart()
             neighbor_states[j] = self._transform.decode(meta, payload)
 
-        self._exchange.end(name)
+        self._exchange.end()
 
         return neighbor_states
 
-    def exchange(self, name: str, value: npt.NDArray) -> dict[str, npt.NDArray]:
+    def exchange(self, state: npt.NDArray) -> dict[str, npt.NDArray]:
         """
-        Exchanges the given value with all neighbor nodes.
+        Exchanges the given state with all neighbor nodes.
 
-        This method broadcasts the value to all neighbors and then gathers their values.
+        This method broadcasts the state to all neighbors and then gathers their states.
 
         Args:
-            name (str): The name of the variable to be exchanged.
-
-            value (NDArray[np.float64]): The value array to exchange with neighbors.
+            state (NDArray[np.float64]): The state array to exchange with neighbors.
 
         Returns:
-            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received value arrays.
+            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
-        self._exchange.begin(name)
+        self._exchange.begin()
 
-        meta_bytes, payload = self._transform.encode(value)
+        meta_bytes, payload = self._transform.encode(state)
         payload = np.ascontiguousarray(payload)
         for j in self._neighbors:
             dealer = self._dealers[j]
@@ -877,31 +854,28 @@ class Network:
         for j in self._neighbors:
             dealer = self._dealers[j]
             meta_bytes, payload = dealer.recv_multipart()
-            value = self._transform.decode(meta_bytes, payload)
-            neighbor_states[j] = value
+            neighbor_states[j] = self._transform.decode(meta_bytes, payload)
 
-        self._exchange.end(name)
+        self._exchange.end()
 
         return neighbor_states
 
-    def exchange_as_array(self, name: str, value: npt.NDArray) -> npt.NDArray:
+    def exchange_as_array(self, state: npt.NDArray) -> npt.NDArray:
         """
-        Exchanges the given value with all neighbor nodes and returns their values as a stacked array.
+        Exchanges the given state with all neighbor nodes and returns their states as a stacked array.
 
-        Note: Using this method will add an extra copy of the neighbor values in memory compared to the `exchange` method.
-        This is because the values are first received as individual memory buffers and then stacked into a single array.
+        Note: Using this method will add an extra copy of the neighbor states in memory compared to the `exchange` method.
+        This is because the states are first received as individual memory buffers and then stacked into a single array.
 
         Args:
-            name (str): The name of the variable to be exchanged.
-
-            value (NDArray[np.float64]): The value array to exchange with neighbors.
+            state (NDArray[np.float64]): The state array to exchange with neighbors.
 
         Returns:
-            NDArray[np.float64]: A 2D array where each row corresponds to a neighbor's received value array.
+            NDArray[np.float64]: A 2D array where each row corresponds to a neighbor's received state array.
         """
-        self._exchange.begin(name)
+        self._exchange.begin()
 
-        meta_bytes, payload = self._transform.encode(value)
+        meta_bytes, payload = self._transform.encode(state)
         payload = np.ascontiguousarray(payload)
         for j in self._neighbors:
             dealer = self._dealers[j]
@@ -911,35 +885,32 @@ class Network:
         for j in self._neighbors:
             dealer = self._dealers[j]
             meta_bytes, payload = dealer.recv_multipart()
-            value = self._transform.decode(meta_bytes, payload)
-            neighbor_states.append(value)
+            neighbor_states.append(self._transform.decode(meta_bytes, payload))
 
-        self._exchange.end(name)
+        self._exchange.end()
 
         return np.stack(neighbor_states, axis=0)
 
-    def laplacian(self, name: str, value: npt.NDArray) -> npt.NDArray:
+    def laplacian(self, state: npt.NDArray) -> npt.NDArray:
         """
-        Computes the Laplacian of the given value vector based on the values of neighboring nodes.
+        Computes the Laplacian of the given state vector based on the states of neighboring nodes.
 
         The Laplacian is calculated as:
 
-            laplacian = value * number_of_neighbors - sum_of_neighbor_values
+            laplacian = state * number_of_neighbors - sum_of_neighbor_states
 
         Args:
-            name (str): The name of the variable for which the Laplacian is being computed.
-
-            value (NDArray[float64]): The value vector of the current node.
+            state (NDArray[float64]): The state vector of the current node.
 
         Returns:
-            NDArray[float64]: The Laplacian vector representing the difference between the current value and the average value of its neighbors.
+            NDArray[float64]: The Laplacian vector representing the difference between the current state and the average state of its neighbors.
         """
-        neighbor_states = self.exchange(name, value)
-        laplacian = value * len(neighbor_states) - sum(neighbor_states.values())
+        neighbor_states = self.exchange(state)
+        laplacian = state * len(neighbor_states) - sum(neighbor_states.values())
 
         return laplacian
 
-    def weighted_mix(self, name: str, value: npt.NDArray) -> npt.NDArray:
+    def weighted_mix(self, state: npt.NDArray) -> npt.NDArray:
         """
         Performs the weighted mixing operation for distributed optimization using the weight matrix W.
 
@@ -952,18 +923,16 @@ class Network:
         where W_ii is self._weight and W_ij are the weights in self._neighbor_weights.
 
         Args:
-            name (str): The name of the variable being mixed.
-
-            value (NDArray[np.float64]): The current value vector of node i.
+            state (NDArray[np.float64]): The current state vector of node i.
 
         Returns:
-            NDArray[float64]: The mixed value vector corresponding to the i-th row of Wx.
+            NDArray[float64]: The mixed state vector corresponding to the i-th row of Wx.
         """
-        neighbor_states = self.exchange(name, value)
+        neighbor_states = self.exchange(state)
         nbrs = self._neighbors
         neighbor_mix = sum(neighbor_states[j] * w for j, w in nbrs.items())
 
-        return (1.0 - sum(nbrs.values())) * value + neighbor_mix
+        return (1.0 - sum(nbrs.values())) * state + neighbor_mix
 
     def _run(self) -> None:
         """

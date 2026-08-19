@@ -44,7 +44,7 @@ def consensus(
         k = network.round_id
 
         while k < n_iter - 1:
-            states[k + 1] = states[k] - network.laplacian("x", states[k]) * alpha
+            states[k + 1] = states[k] - network.laplacian(states[k]) * alpha
 
             k = network.next_round()
 

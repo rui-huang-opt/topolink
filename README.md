@@ -131,7 +131,7 @@ network.start()
 
 try:
    while network.round_id < 50: 
-      x = x - alpha * network.laplacian(name="x", value=x)
+      x = x - alpha * network.laplacian(x)
       network.next_round()
 
 finally:
