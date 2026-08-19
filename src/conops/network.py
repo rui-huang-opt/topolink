@@ -326,11 +326,13 @@ class NetworkBackend:
     def __init__(
         self,
         node_id: str,
+        namespace: str,
         state: ProtocolState,
         node: pyre.Pyre,
         router: zmq.SyncSocket,
     ) -> None:
         self._node_id = node_id
+        self._namespace = namespace
         self._state = state
         self._node = node
         self._router = router
@@ -406,6 +408,11 @@ class NetworkBackend:
         peer_id = self._extract_node_id(event)
 
         if peer_id is None or peer_id == self._node_id:
+            return
+
+        namespace = self._extract_namespace(event)
+
+        if namespace != self._namespace:
             return
 
         peer = self._peers.mark_reachable(
@@ -625,6 +632,22 @@ class NetworkBackend:
             return None
 
     @staticmethod
+    def _extract_namespace(event: list[bytes]) -> str | None:
+        if len(event) < 4:
+            return None
+
+        candidate = event[3]
+
+        if not isinstance(candidate, bytes):
+            return None
+
+        try:
+            headers = msgspec.json.decode(candidate, type=dict[str, str])
+            return headers.get("namespace")
+        except msgspec.DecodeError:
+            return None
+
+    @staticmethod
     def _extract_message_type(event: list[bytes]) -> str | None:
         if len(event) < 4:
             return None
@@ -810,6 +833,7 @@ class Network:
 
     def _run(self) -> None:
         node = pyre.Pyre(self._node_id, ctx=self._context)
+        node.set_header("namespace", self._namespace)
         pyre_socket = node.socket()
 
         router = self._context.socket(zmq.ROUTER)
@@ -820,7 +844,13 @@ class Network:
         poller.register(pyre_socket, zmq.POLLIN)
         poller.register(router, zmq.POLLIN)
 
-        backend = NetworkBackend(self._node_id, self._state, node, router)
+        backend = NetworkBackend(
+            node_id=self._node_id,
+            namespace=self._namespace,
+            state=self._state,
+            node=node,
+            router=router,
+        )
 
         try:
             node.start()
