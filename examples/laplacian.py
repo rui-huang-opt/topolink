@@ -10,13 +10,7 @@ from conops.network import Network
 N_STATE = 3
 
 NODES = ["1", "2", "3", "4", "5"]
-EDGES = [
-    ("1", "2"),
-    ("2", "3"),
-    ("3", "4"),
-    ("4", "5"),
-    ("5", "1"),
-]
+EDGES = [("1", "2"), ("2", "3"), ("3", "4"), ("4", "5"), ("5", "1")]
 
 graph = Graph(NODES, EDGES)
 
@@ -39,21 +33,14 @@ def laplacian_consensus(
         x = np.zeros((n_iter, n_state))
 
         npr.seed(int(idx))
-        x[0] = npr.uniform(
-            -100.0,
-            100.0,
-            n_state,
-        )
+        x[0] = npr.uniform(-100.0, 100.0, n_state)
 
-        while True:
-            k = network.round_id
+        k = network.round_id
 
-            if k >= n_iter - 1:
-                break
-
+        while k < n_iter - 1:
             x[k + 1] = x[k] - network.laplacian("x", x[k]) * 0.45
 
-            network.next_round()
+            k = network.next_round()
 
     finally:
         network.stop()

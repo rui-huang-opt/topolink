@@ -34,19 +34,23 @@ def main() -> None:
 
     try:
         x = np.zeros((args.n_iter, args.n_state))
+        y = np.zeros((args.n_iter, args.n_state))
         npr.seed(int(args.node_id))  # Ensure reproducibility for each node
         x[0] = npr.uniform(-100.0, 100.0, args.n_state)
+        y[0] = npr.uniform(-100.0, 100.0, args.n_state)
 
-        while True:
-            k = network.round_id
+        k = network.round_id
 
-            if k >= args.n_iter - 1:
-                break
-
-            print(f"Node {args.node_id} - Round {k}: x = {x[k]}", flush=True)
+        while k < args.n_iter - 1:
+            print(
+                f"[{args.node_id}] - Round {k}: x = {x[k]}, y = {y[k]}",
+                flush=True,
+            )
 
             x[k + 1] = x[k] - network.laplacian("x", x[k]) * 0.45
-            network.next_round()
+            y[k + 1] = y[k] - network.laplacian("y", y[k]) * 0.2
+
+            k = network.next_round()
 
             time.sleep(args.interval)
 

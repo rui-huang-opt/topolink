@@ -27,16 +27,18 @@ star = Graph(NODES, STAR_EDGES)
 def consensus(
     idx: str,
     neighbors: dict[str, float],
-    namespace: str,
     n_state: int,
-    alpha: float,
+    alpha1: float,
+    alpha2: float,
     n_iter: int = 50,
-) -> npt.NDArray[np.float64]:
-    network = Network(node_id=idx, neighbors=neighbors, namespace=namespace)
+) -> tuple[npt.NDArray, npt.NDArray]:
+    network = Network(node_id=idx, neighbors=neighbors)
 
-    states = np.zeros((n_iter, n_state))
+    x = np.zeros((n_iter, n_state))
+    y = np.zeros((n_iter, n_state))
     npr.seed(int(idx))  # Ensure reproducibility for each node
-    states[0] = npr.uniform(-100.0, 100.0, n_state)
+    x[0] = npr.uniform(-100.0, 100.0, n_state)
+    y[0] = npr.uniform(-100.0, 100.0, n_state)
 
     network.start()
 
@@ -44,31 +46,27 @@ def consensus(
         k = network.round_id
 
         while k < n_iter - 1:
-            states[k + 1] = states[k] - network.laplacian("x", states[k]) * alpha
+            x[k + 1] = x[k] - network.laplacian("x", x[k]) * alpha1
+            y[k + 1] = y[k] - network.laplacian("y", y[k]) * alpha2
 
             k = network.next_round()
 
     finally:
         network.stop()
 
-    return states
+    return x, y
 
 
 def main() -> None:
     ray.init()
 
     try:
-        ring_tasks = [
-            consensus.remote(str(i + 1), ring[str(i + 1)], "ring", N_STATE, 0.35)
-            for i in range(N_NODES)
-        ]
-        star_tasks = [
-            consensus.remote(str(i + 1), star[str(i + 1)], "star", N_STATE, 0.35)
+        tasks = [
+            consensus.remote(str(i + 1), ring[str(i + 1)], N_STATE, 0.35, 0.1)
             for i in range(N_NODES)
         ]
 
-        ring_states = [ray.get(task) for task in ring_tasks]
-        star_states = [ray.get(task) for task in star_tasks]
+        results = [ray.get(task) for task in tasks]
     finally:
         ray.shutdown()
 
@@ -77,28 +75,26 @@ def main() -> None:
     _, ax1 = plt.subplots()
 
     for i in range(N_NODES):
-        states = ring_states[i]
+        x = results[i][0]
         for j in range(N_STATE):
-            (line,) = ax1.plot(states[:, j], color=colors[i])
+            (line,) = ax1.plot(x[:, j], color=colors[i])
             line.set_label(f"Node {i + 1}") if j == 0 else None
 
     ax1.set_xlabel("Iteration")
-    ax1.set_ylabel("State Value")
+    ax1.set_ylabel("x Value")
     ax1.grid()
     ax1.legend()
-    ax1.set_title(f"Ring Graph Consensus (Nodes={N_NODES}, State Dim={N_STATE})")
 
     _, ax2 = plt.subplots()
 
     for i in range(N_NODES):
-        states = star_states[i]
+        y = results[i][1]
         for j in range(N_STATE):
-            (line,) = ax2.plot(states[:, j], color=colors[i])
+            (line,) = ax2.plot(y[:, j], color=colors[i])
             line.set_label(f"Node {i + 1}") if j == 0 else None
 
-    ax2.set_title(f"Star Graph Consensus (Nodes={N_NODES}, State Dim={N_STATE})")
     ax2.set_xlabel("Iteration")
-    ax2.set_ylabel("State Value")
+    ax2.set_ylabel("y Value")
     ax2.legend()
     ax2.grid()
 

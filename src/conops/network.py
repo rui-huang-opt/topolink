@@ -11,14 +11,9 @@ import msgspec
 import numpy as np
 import numpy.typing as npt
 
-from .transform import Transform, Identity
+from .transform import Transform, Identity, StateMeta
 
 logger = logging.getLogger(__name__)
-
-
-class StateMeta(msgspec.Struct, frozen=True):
-    dtype: str
-    shape: tuple[int, ...]
 
 
 class State(msgspec.Struct, tag="STATE", tag_field="type", frozen=True):
@@ -117,7 +112,7 @@ class PeerRegistry:
         return peer
 
 
-class ProtocolState:
+class Exchange:
     CACHE_ROUNDS = 2
 
     def __init__(self) -> None:
@@ -137,11 +132,11 @@ class ProtocolState:
             return self._round_id
 
     @property
-    def exchange_key(self) -> tuple[int, str | None]:
+    def key(self) -> tuple[int, str | None]:
         with self._lock:
             return self._round_id, self._name
 
-    def begin_exchange(self, name: str) -> tuple[int, str]:
+    def begin(self, name: str) -> tuple[int, str]:
         with self._lock:
             if self._name is not None:
                 raise RuntimeError(f"Exchange already active: {self._name}")
@@ -150,7 +145,7 @@ class ProtocolState:
 
             return self._round_id, name
 
-    def end_exchange(self, name: str) -> None:
+    def end(self, name: str) -> None:
         with self._lock:
             if self._name != name:
                 raise RuntimeError(f"Unexpected exchange end: {name}")
@@ -327,13 +322,13 @@ class NetworkBackend:
         self,
         node_id: str,
         namespace: str,
-        state: ProtocolState,
+        exchange: Exchange,
         node: pyre.Pyre,
         router: zmq.SyncSocket,
     ) -> None:
         self._node_id = node_id
         self._namespace = namespace
-        self._state = state
+        self._exchange = exchange
         self._node = node
         self._router = router
 
@@ -373,7 +368,7 @@ class NetworkBackend:
         except UnicodeDecodeError:
             return
 
-        round_id, name = self._state.exchange_key
+        round_id, name = self._exchange.key
 
         if name is None:
             logger.warning("[%s] No active exchange", self._node_id)
@@ -381,17 +376,17 @@ class NetworkBackend:
 
         msg = State(round_id=round_id, name=name, meta=meta, payload=payload)
 
-        self._state.cache_sent(msg)
+        self._exchange.cache_sent(msg)
 
-        self._state.begin_wait(peer_id)
+        self._exchange.begin_wait(peer_id)
 
         peer = self._peers.get_or_create_peer(peer_id)
 
-        received = self._state.take_received(peer_id)
+        received = self._exchange.take_received(peer_id)
 
         if received is not None:
             self._forward_to_frontend(peer_id, received)
-            self._state.finish_wait(peer_id, received)
+            self._exchange.finish_wait(peer_id, received)
 
         if not peer.reachable or peer.pyre_uuid is None:
             peer.pending.append(msg)
@@ -451,19 +446,19 @@ class NetworkBackend:
             self._handle_sync(peer_id, msg)
 
     def _handle_state(self, peer_id: str, msg: State) -> None:
-        local_round, local_name = self._state.exchange_key
+        local_round, local_name = self._exchange.key
 
         if local_name is None:
-            self._state.cache_received(peer_id, msg)
+            self._exchange.cache_received(peer_id, msg)
             return
 
         # 1. 正常当前消息
         if msg.round_id == local_round and msg.name == local_name:
-            if self._state.is_waiting(peer_id, msg):
+            if self._exchange.is_waiting(peer_id, msg):
                 self._forward_to_frontend(peer_id, msg)
-                self._state.finish_wait(peer_id, msg)
+                self._exchange.finish_wait(peer_id, msg)
             else:
-                self._state.cache_received(peer_id, msg)
+                self._exchange.cache_received(peer_id, msg)
             return
 
         # 2. peer 落后：restart / catch-up
@@ -475,13 +470,13 @@ class NetworkBackend:
                 payload=msg.payload,
             )
 
-            if self._state.is_waiting(peer_id, promoted):
+            if self._exchange.is_waiting(peer_id, promoted):
                 self._forward_to_frontend(peer_id, promoted)
-                self._state.finish_wait(peer_id, promoted)
+                self._exchange.finish_wait(peer_id, promoted)
             else:
-                self._state.cache_received(peer_id, promoted)
+                self._exchange.cache_received(peer_id, promoted)
 
-            current = self._state.get_sent(round_id=local_round, name=local_name)
+            current = self._exchange.get_sent(round_id=local_round, name=local_name)
 
             if current is None:
                 return
@@ -502,10 +497,10 @@ class NetworkBackend:
             return
 
         # 3. peer ahead / 同轮不同 exchange
-        self._state.cache_received(peer_id, msg)
+        self._exchange.cache_received(peer_id, msg)
 
     def _handle_request(self, peer_id: str, request: Request) -> None:
-        sent = self._state.get_sent(round_id=request.round_id, name=request.name)
+        sent = self._exchange.get_sent(round_id=request.round_id, name=request.name)
 
         if sent is None:
             return
@@ -518,7 +513,7 @@ class NetworkBackend:
         self._send_message(pyre_uuid, sent)
 
     def _handle_sync(self, peer_id: str, sync: Sync) -> None:
-        local_round, local_name = self._state.exchange_key
+        local_round, local_name = self._exchange.key
 
         if local_name != sync.name:
             return
@@ -527,7 +522,7 @@ class NetworkBackend:
             return
 
         if sync.round_id > local_round:
-            self._state.sync_round(
+            self._exchange.sync_round(
                 round_id=sync.round_id,
                 name=sync.name,
             )
@@ -539,18 +534,18 @@ class NetworkBackend:
             payload=sync.payload,
         )
 
-        if self._state.claim_delivery(peer_id, msg):
+        if self._exchange.claim_delivery(peer_id, msg):
             self._forward_to_frontend(peer_id, msg)
 
     def _handle_behind_peer(self, peer_id: str, msg: State) -> None:
-        local_round, local_name = self._state.exchange_key
+        local_round, local_name = self._exchange.key
 
         if local_name is None:
             return
 
         # 第一版只对相同 exchange 做直接 rejoin。
         if msg.name != local_name:
-            self._state.cache_received(peer_id, msg)
+            self._exchange.cache_received(peer_id, msg)
             self._request_current_state(peer_id)
             return
 
@@ -559,12 +554,12 @@ class NetworkBackend:
             round_id=local_round, name=local_name, meta=msg.meta, payload=msg.payload
         )
 
-        if self._state.claim_delivery(peer_id, promoted):
+        if self._exchange.claim_delivery(peer_id, promoted):
             self._forward_to_frontend(peer_id, promoted)
 
         # 把我自己当前 round 的状态发给重启节点，
         # 告诉它直接同步到这里。
-        current = self._state.get_sent(round_id=local_round, name=local_name)
+        current = self._exchange.get_sent(round_id=local_round, name=local_name)
 
         if current is None:
             return
@@ -584,7 +579,7 @@ class NetworkBackend:
         self._send_message(pyre_uuid, sync)
 
     def _request_current_state(self, peer_id: str) -> None:
-        round_id, name = self._state.exchange_key
+        round_id, name = self._exchange.key
 
         if name is None:
             return
@@ -697,7 +692,7 @@ class Network:
         else:
             self._context = context
 
-        self._state = ProtocolState()
+        self._exchange = Exchange()
 
         self._running = threading.Event()
         self._thread: threading.Thread | None = None
@@ -716,7 +711,7 @@ class Network:
 
     @property
     def round_id(self) -> int:
-        round_id, _ = self._state.exchange_key
+        round_id, _ = self._exchange.key
         return round_id
 
     def start(self) -> None:
@@ -775,7 +770,7 @@ class Network:
         self._thread = None
 
     def next_round(self) -> int:
-        return self._state.advance_round()
+        return self._exchange.advance_round()
 
     def exchange(self, name: str, state: npt.NDArray) -> dict[str, npt.NDArray]:
         """
@@ -789,7 +784,7 @@ class Network:
         Returns:
             dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state arrays.
         """
-        self._state.begin_exchange(name)
+        self._exchange.begin(name)
 
         meta = StateMeta(dtype=str(state.dtype), shape=state.shape)
         meta_bytes = msgspec.msgpack.encode(meta)
@@ -808,7 +803,7 @@ class Network:
             value = np.frombuffer(payload, dtype=meta.dtype).reshape(meta.shape)
             neighbor_states[j] = value
 
-        self._state.end_exchange(name)
+        self._exchange.end(name)
 
         return neighbor_states
 
@@ -847,7 +842,7 @@ class Network:
         backend = NetworkBackend(
             node_id=self._node_id,
             namespace=self._namespace,
-            state=self._state,
+            exchange=self._exchange,
             node=node,
             router=router,
         )

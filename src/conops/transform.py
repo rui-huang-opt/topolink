@@ -1,9 +1,15 @@
 from json import loads, dumps
 from typing import Protocol
 
+import msgspec
 import numpy as np
 import numpy.random as npr
 from numpy.typing import NDArray
+
+
+class StateMeta(msgspec.Struct, frozen=True):
+    dtype: str
+    shape: tuple[int, ...]
 
 
 class Transform(Protocol):
