@@ -51,6 +51,8 @@ def main() -> None:
 
             time.sleep(args.interval)
 
+        print(f"[{args.node_id}] - Round {k}: x = {x[k]}, y = {y[k]}", flush=True)
+
     finally:
         network.stop()
 
