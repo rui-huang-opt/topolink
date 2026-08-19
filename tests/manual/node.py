@@ -42,10 +42,7 @@ def main() -> None:
         k = network.round_id
 
         while k < args.n_iter - 1:
-            print(
-                f"[{args.node_id}] - Round {k}: x = {x[k]}, y = {y[k]}",
-                flush=True,
-            )
+            print(f"[{args.node_id}] - Round {k}: x = {x[k]}, y = {y[k]}", flush=True)
 
             x[k + 1] = x[k] - network.laplacian("x", x[k]) * 0.45
             y[k + 1] = y[k] - network.laplacian("y", y[k]) * 0.2

@@ -11,7 +11,7 @@ import msgspec
 import numpy as np
 import numpy.typing as npt
 
-from .transform import Transform, Identity, StateMeta
+from .transform import Transform, Identity
 
 logger = logging.getLogger(__name__)
 
@@ -772,6 +772,48 @@ class Network:
     def next_round(self) -> int:
         return self._exchange.advance_round()
 
+    def neighborwise_exchange(
+        self, name: str, state_map: dict[str, npt.NDArray]
+    ) -> dict[str, npt.NDArray]:
+        """
+        Exchanges the given state map with all neighbor nodes.
+
+        This method broadcasts the state map to all neighbors and then gathers their states.
+
+        Args:
+            name (str): The name of the variable to be exchanged.
+
+            state_map (dict[str, NDArray[np.float64]]): The state map to exchange with neighbors.
+
+        Returns:
+            dict[str, NDArray[np.float64]]: A dictionary mapping neighbor names to their received state maps.
+        """
+        if state_map.keys() != self._neighbors.keys():
+            missing = self._neighbors.keys() - state_map.keys()
+            extra = state_map.keys() - self._neighbors.keys()
+            err_msg = f"State dictionary keys do not match neighbor names. Missing: {missing}, Extra: {extra}."
+            logger.error(err_msg)
+            raise ValueError(err_msg)
+
+        self._exchange.begin(name)
+
+        for j in self._neighbors:
+            state = state_map[j]
+            meta, payload = self._transform.encode(state)
+            payload = np.ascontiguousarray(payload)
+            dealer = self._dealers[j]
+            dealer.send_multipart([meta, payload])
+
+        neighbor_states: dict[str, npt.NDArray] = {}
+        for j in self._neighbors:
+            dealer = self._dealers[j]
+            meta, payload = dealer.recv_multipart()
+            neighbor_states[j] = self._transform.decode(meta, payload)
+
+        self._exchange.end(name)
+
+        return neighbor_states
+
     def exchange(self, name: str, state: npt.NDArray) -> dict[str, npt.NDArray]:
         """
         Exchanges the given state with all neighbor nodes.
@@ -779,6 +821,8 @@ class Network:
         This method broadcasts the state to all neighbors and then gathers their states.
 
         Args:
+            name (str): The name of the variable to be exchanged.
+
             state (NDArray[np.float64]): The state array to exchange with neighbors.
 
         Returns:
@@ -786,26 +830,56 @@ class Network:
         """
         self._exchange.begin(name)
 
-        meta = StateMeta(dtype=str(state.dtype), shape=state.shape)
-        meta_bytes = msgspec.msgpack.encode(meta)
-        payload = np.ascontiguousarray(state)
+        meta_bytes, payload = self._transform.encode(state)
+        payload = np.ascontiguousarray(payload)
         for j in self._neighbors:
             dealer = self._dealers[j]
-            msgs = [meta_bytes, payload]
-            dealer.send_multipart(msgs)
+            dealer.send_multipart([meta_bytes, payload])
 
         neighbor_states: dict[str, npt.NDArray] = {}
         for j in self._neighbors:
             dealer = self._dealers[j]
             meta_bytes, payload = dealer.recv_multipart()
-
-            meta = msgspec.msgpack.decode(meta_bytes, type=StateMeta)
-            value = np.frombuffer(payload, dtype=meta.dtype).reshape(meta.shape)
+            value = self._transform.decode(meta_bytes, payload)
             neighbor_states[j] = value
 
         self._exchange.end(name)
 
         return neighbor_states
+
+    def exchange_as_array(self, name: str, state: npt.NDArray) -> npt.NDArray:
+        """
+        Exchanges the given state with all neighbor nodes and returns their states as a stacked array.
+
+        Note: Using this method will add an extra copy of the neighbor states in memory compared to the `exchange` method.
+        This is because the states are first received as individual memory buffers and then stacked into a single array.
+
+        Args:
+            name (str): The name of the variable to be exchanged.
+
+            state (NDArray[np.float64]): The state array to exchange with neighbors.
+
+        Returns:
+            NDArray[np.float64]: A 2D array where each row corresponds to a neighbor's received state array.
+        """
+        self._exchange.begin(name)
+
+        meta_bytes, payload = self._transform.encode(state)
+        payload = np.ascontiguousarray(payload)
+        for j in self._neighbors:
+            dealer = self._dealers[j]
+            dealer.send_multipart([meta_bytes, payload])
+
+        neighbor_states: list[npt.NDArray] = []
+        for j in self._neighbors:
+            dealer = self._dealers[j]
+            meta_bytes, payload = dealer.recv_multipart()
+            value = self._transform.decode(meta_bytes, payload)
+            neighbor_states.append(value)
+
+        self._exchange.end(name)
+
+        return np.stack(neighbor_states, axis=0)
 
     def laplacian(self, name: str, state: npt.NDArray) -> npt.NDArray:
         """
@@ -816,6 +890,8 @@ class Network:
             laplacian = state * number_of_neighbors - sum_of_neighbor_states
 
         Args:
+            name (str): The name of the variable for which the Laplacian is being computed.
+
             state (NDArray[float64]): The state vector of the current node.
 
         Returns:
@@ -826,7 +902,36 @@ class Network:
 
         return laplacian
 
+    def weighted_mix(self, name: str, state: npt.NDArray) -> npt.NDArray:
+        """
+        Performs the weighted mixing operation for distributed optimization using the weight matrix W.
+
+        For a given node i, the mixed state is computed as the i-th row of Wx, where x is the stacked state vector of all nodes.
+        If x_i is multi-dimensional, the operation is applied element-wise.
+        Specifically:
+
+            mixed_state = W_ii * state + sum_j(W_ij * neighbor_state_j)
+
+        where W_ii is self._weight and W_ij are the weights in self._neighbor_weights.
+
+        Args:
+            name (str): The name of the variable being mixed.
+
+            state (NDArray[np.float64]): The current state vector of node i.
+
+        Returns:
+            NDArray[float64]: The mixed state vector corresponding to the i-th row of Wx.
+        """
+        neighbor_states = self.exchange(name, state)
+        nbrs = self._neighbors
+        neighbor_mix = sum(neighbor_states[j] * w for j, w in nbrs.items())
+
+        return (1.0 - sum(nbrs.values())) * state + neighbor_mix
+
     def _run(self) -> None:
+        """
+        The main event loop for the network backend.
+        """
         node = pyre.Pyre(self._node_id, ctx=self._context)
         node.set_header("namespace", self._namespace)
         pyre_socket = node.socket()

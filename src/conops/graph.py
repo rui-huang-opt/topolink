@@ -3,16 +3,38 @@ from typing import KeysView
 from collections import deque
 
 import numpy as np
-from numpy.typing import NDArray
+import numpy.typing as npt
 
-from .utils import is_symmetric_doubly_stochastic
+logger = getLogger(__name__)
 
-logger = getLogger("conops.graph")
+
+def is_symmetric_doubly_stochastic(matrix: npt.NDArray[np.float64]) -> bool:
+    """
+    Check if a matrix is symmetric doubly stochastic.
+
+    Parameters
+    ----------
+    matrix : NDArray[float64]
+        The matrix to check.
+
+    Returns
+    -------
+    bool
+        True if the matrix is symmetric doubly stochastic, False otherwise.
+    """
+    if matrix.ndim != 2 or matrix.shape[0] != matrix.shape[1]:
+        return False
+    if not np.allclose(matrix, matrix.T):
+        return False
+    if np.any(matrix < 0):
+        return False
+
+    return np.allclose(np.sum(matrix, axis=0), 1.0)
 
 
 class Graph:
     """
-    A lightweight helper class for constructing node-wise inputs for `NodeHandle`.
+    A lightweight helper class for constructing node-wise inputs for `Network`.
 
     In decentralized optimization, communication topologies are often specified
     globally by a set of nodes and edges or by a weighted mixing matrix `W`.
@@ -20,7 +42,7 @@ class Graph:
     descriptions.
 
     After a `Graph` is initialized, `graph[i]` returns the local information
-    needed to initialize the `NodeHandle` of node `i`, namely its neighbors
+    needed to initialize the `Network` of node `i`, namely its neighbors
     and the corresponding communication weights.
 
     This class is only a convenience utility and is not part of the core
@@ -83,7 +105,7 @@ class Graph:
     @classmethod
     def from_mixing_matrix(
         cls,
-        mixing_matrix: NDArray[np.float64],
+        mixing_matrix: npt.NDArray[np.float64],
         nodes: list[str] | None = None,
     ) -> "Graph":
         """

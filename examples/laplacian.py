@@ -16,7 +16,7 @@ graph = Graph(NODES, EDGES)
 
 
 @ray.remote(num_cpus=1)
-def laplacian_consensus(
+def consensus(
     idx: str,
     neighbors: dict[str, float],
     n_state: int,
@@ -53,7 +53,7 @@ def main() -> None:
 
     try:
         tasks = [
-            laplacian_consensus.remote(str(i + 1), graph[str(i + 1)], N_STATE)
+            consensus.remote(str(i + 1), graph[str(i + 1)], N_STATE)
             for i in range(graph.num_nodes)
         ]
 

@@ -7,9 +7,15 @@ import numpy.random as npr
 from numpy.typing import NDArray
 
 
-class StateMeta(msgspec.Struct, frozen=True):
+class BasicMeta(msgspec.Struct, frozen=True):
     dtype: str
     shape: tuple[int, ...]
+
+
+class QuantizeMeta(msgspec.Struct, frozen=True):
+    dtype: str
+    shape: tuple[int, ...]
+    scale: float
 
 
 class Transform(Protocol):
@@ -25,7 +31,7 @@ class Transform(Protocol):
         """
         ...
 
-    def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
+    def decode(self, meta_bytes: bytes, payload: bytes) -> NDArray[np.float64]:
         """
         Decode the payload back into the original state using the meta data.
 
@@ -45,15 +51,15 @@ class Identity:
     Identity transform that performs no transformation.
     """
 
-    def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.number]]:
-        dtype = state.dtype.str
-        meta = dumps({"dtype": dtype}).encode()
-        return meta, state
+    def encode(self, state: NDArray) -> tuple[bytes, NDArray]:
+        meta = BasicMeta(dtype=state.dtype.str, shape=state.shape)
+        meta_bytes = msgspec.msgpack.encode(meta)
+        return meta_bytes, state
 
-    def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = loads(meta.decode())
-        dtype = np.dtype(meta_dict["dtype"])
-        return np.frombuffer(payload, dtype=dtype).astype(np.float64, copy=False)
+    def decode(self, meta_bytes: bytes, payload: bytes) -> NDArray:
+        meta = msgspec.msgpack.decode(meta_bytes, type=BasicMeta)
+        dtype = np.dtype(meta.dtype)
+        return np.frombuffer(payload, dtype=dtype).reshape(meta.shape)
 
 
 class Quantize:
@@ -69,32 +75,32 @@ class Quantize:
     def __init__(self, dtype: str = "int8"):
         self.dtype = dtype
 
-    def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.number]]:
-        dtype_ = np.dtype(self.dtype)
-        min_val = np.iinfo(dtype_).min
-        max_val = np.iinfo(dtype_).max
+    def encode(self, state: NDArray) -> tuple[bytes, NDArray]:
+        dtype = np.dtype(self.dtype)
+        min_val = np.iinfo(dtype).min
+        max_val = np.iinfo(dtype).max
 
         abs_state = np.abs(state)
         nonzero = abs_state[abs_state > 0]
         if nonzero.size == 0:
             scale = 1.0
         else:
-            scale = np.max(nonzero) / max_val
+            scale = float(np.max(nonzero) / max_val)
 
         scaled_state = state / scale
         rounded_state = np.round(scaled_state)
         clipped_state = np.clip(rounded_state, min_val, max_val)
-        quantized_state = clipped_state.astype(dtype_, copy=False)
+        quantized_state = clipped_state.astype(dtype, copy=False)
 
-        meta = dumps({"scale": scale, "dtype": self.dtype}).encode()
-        return meta, quantized_state
+        meta = QuantizeMeta(dtype=self.dtype, shape=quantized_state.shape, scale=scale)
+        meta_bytes = msgspec.msgpack.encode(meta)
+        return meta_bytes, quantized_state
 
-    def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = loads(meta.decode())
-        dtype = np.dtype(meta_dict["dtype"])
-        scale = meta_dict["scale"]
-        quantized_state = np.frombuffer(payload, dtype=dtype)
-        return quantized_state.astype(np.float64, copy=False) * scale
+    def decode(self, meta_bytes: bytes, payload: bytes) -> NDArray:
+        meta = msgspec.msgpack.decode(meta_bytes, type=QuantizeMeta)
+        dtype = np.dtype(meta.dtype)
+        quantized_state = np.frombuffer(payload, dtype=dtype).reshape(meta.shape)
+        return quantized_state.astype(np.float64, copy=False) * meta.scale
 
 
 class DPMechanism:
@@ -115,17 +121,18 @@ class DPMechanism:
         self.sensitivity = sensitivity
         self._scale = sensitivity / epsilon
 
-    def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.number]]:
+    def encode(self, state: NDArray) -> tuple[bytes, NDArray]:
         noise = npr.laplace(0, self._scale, size=state.shape)
         noisy_state = state + noise
         dtype = noisy_state.dtype.str
-        meta = dumps({"dtype": dtype}).encode()
-        return meta, noisy_state
+        meta = BasicMeta(dtype=dtype, shape=noisy_state.shape)
+        meta_bytes = msgspec.msgpack.encode(meta)
+        return meta_bytes, noisy_state
 
-    def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = loads(meta.decode())
-        dtype = np.dtype(meta_dict["dtype"])
-        return np.frombuffer(payload, dtype=dtype).astype(np.float64, copy=False)
+    def decode(self, meta_bytes: bytes, payload: bytes) -> NDArray:
+        meta = msgspec.msgpack.decode(meta_bytes, type=BasicMeta)
+        dtype = np.dtype(meta.dtype)
+        return np.frombuffer(payload, dtype=dtype).reshape(meta.shape)
 
 
 class GaussianNoise:
@@ -145,14 +152,15 @@ class GaussianNoise:
         self.loc = loc
         self.scale = scale
 
-    def encode(self, state: NDArray[np.float64]) -> tuple[bytes, NDArray[np.float64]]:
+    def encode(self, state: NDArray) -> tuple[bytes, NDArray]:
         noise = npr.normal(self.loc, self.scale, state.shape)
         noisy_state = state + noise
         dtype = noisy_state.dtype.str
-        meta = dumps({"dtype": dtype}).encode()
-        return meta, noisy_state
+        meta = BasicMeta(dtype=dtype, shape=noisy_state.shape)
+        meta_bytes = msgspec.msgpack.encode(meta)
+        return meta_bytes, noisy_state
 
-    def decode(self, meta: bytes, payload: bytes) -> NDArray[np.float64]:
-        meta_dict = loads(meta.decode())
-        dtype = np.dtype(meta_dict["dtype"])
-        return np.frombuffer(payload, dtype=dtype).astype(np.float64, copy=False)
+    def decode(self, meta_bytes: bytes, payload: bytes) -> NDArray:
+        meta = msgspec.msgpack.decode(meta_bytes, type=BasicMeta)
+        dtype = np.dtype(meta.dtype)
+        return np.frombuffer(payload, dtype=dtype).reshape(meta.shape)
