@@ -41,7 +41,7 @@ def main() -> None:
 
         k = network.round_id
 
-        while network.round_id < args.n_iter - 1:
+        while k < args.n_iter - 1:
             print(f"[{args.node_id}] - Round {k}: x = {x}, y = {y}", flush=True)
 
             x = x - network.laplacian(x) * 0.45

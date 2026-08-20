@@ -3,7 +3,7 @@ import threading
 import time
 import uuid
 import logging
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import zmq
 import pyre
@@ -123,8 +123,8 @@ class Exchange:
     def __init__(self) -> None:
         self._lock = threading.Lock()
 
-        self._round_id = 0
-        self._exchange_id = 0
+        # (round_id, exchange_id)
+        self._progress: tuple[int, int] = (0, 0)
         self._active = False
 
         # Current-round states sent to each peer.
@@ -142,17 +142,17 @@ class Exchange:
     @property
     def round_id(self) -> int:
         with self._lock:
-            return self._round_id
+            return self._progress[0]
 
     @property
     def exchange_id(self) -> int:
         with self._lock:
-            return self._exchange_id
+            return self._progress[1]
 
     @property
     def progress(self) -> tuple[int, int]:
         with self._lock:
-            return self._round_id, self._exchange_id
+            return self._progress
 
     @property
     def sent_peers(self) -> tuple[str, ...]:
@@ -171,7 +171,7 @@ class Exchange:
 
             self._active = True
 
-            return self._round_id, self._exchange_id
+            return self._progress
 
     def end(self) -> tuple[int, int]:
         with self._lock:
@@ -179,23 +179,14 @@ class Exchange:
                 raise RuntimeError("No active exchange")
 
             self._active = False
-            self._exchange_id += 1
+            self._progress = (self._progress[0], self._progress[1] + 1)
 
-            return self._round_id, self._exchange_id
+            return self._progress
 
     def advance_round(self) -> int:
         with self._lock:
             if self._active:
                 raise RuntimeError("Cannot advance round during an active exchange")
-
-            self._round_id += 1
-            self._exchange_id = 0
-
-            # Replay is only needed within the current round.
-            self._sent.clear()
-
-            # Previous-round delivery bookkeeping is no longer useful.
-            self._delivered.clear()
 
             if self._waiting:
                 raise RuntimeError(
@@ -203,27 +194,22 @@ class Exchange:
                     f"{tuple(self._waiting)}"
                 )
 
-            # Keep only messages from the new round or future rounds.
+            self._progress = (self._progress[0] + 1, 0)
+
+            self._sent.clear()
+            self._delivered.clear()
             self._prune_received()
 
-            return self._round_id
+            return self._progress[0]
 
     def recover_round(self, round_id: int) -> bool:
-        """
-        Jumps directly to a newer round and restarts that round from
-        exchange 0.
-
-        States already forwarded to the frontend are never rolled back.
-        Outstanding receives and current outgoing states are rebased to
-        the recovered round.
-        """
         with self._lock:
-            if round_id <= self._round_id:
+            if round_id <= self._progress[0]:
                 return False
 
-            old_progress = (self._round_id, self._exchange_id)
+            old_progress = self._progress
+            exchange_id = old_progress[1]
 
-            # Preserve all outgoing states of the current exchange.
             sent_states: dict[str, State] = {}
 
             for peer_id, messages in self._sent.items():
@@ -232,29 +218,31 @@ class Exchange:
                 if msg is not None:
                     sent_states[peer_id] = msg
 
-            self._round_id = round_id
-            self._exchange_id = 0
+            # Preserve the frontend exchange phase.
+            self._progress = (round_id, exchange_id)
+            new_progress = self._progress
 
-            new_progress = (self._round_id, self._exchange_id)
-
-            # Old-round replay history is abandoned.
             self._sent.clear()
 
-            # Rebase every current outgoing state.
             for peer_id, msg in sent_states.items():
                 recovered = State(
-                    round_id=new_progress[0],
-                    exchange_id=new_progress[1],
+                    round_id=round_id,
+                    exchange_id=exchange_id,
                     meta=msg.meta,
                     payload=msg.payload,
                 )
 
                 self._sent.setdefault(peer_id, {})[new_progress] = recovered
 
-            # Only outstanding frontend receives are rebased.
             for peer_id, progress in self._waiting.items():
                 if progress == old_progress:
                     self._waiting[peer_id] = new_progress
+
+            # Already delivered values of the current frontend exchange
+            # remain delivered after the round promotion.
+            for peer_id, progress in self._delivered.items():
+                if progress == old_progress:
+                    self._delivered[peer_id] = new_progress
 
             self._prune_received()
 
@@ -264,7 +252,7 @@ class Exchange:
         with self._lock:
             progress = (msg.round_id, msg.exchange_id)
 
-            current = (self._round_id, self._exchange_id)
+            current = self._progress
 
             if progress != current:
                 raise RuntimeError(f"Exchange mismatch: {progress} != {current}")
@@ -292,7 +280,7 @@ class Exchange:
 
     def take_received(self, peer_id: str) -> State | None:
         with self._lock:
-            progress = (self._round_id, self._exchange_id)
+            progress = self._progress
 
             messages = self._received.get(peer_id)
 
@@ -311,7 +299,7 @@ class Exchange:
             if not self._active:
                 raise RuntimeError("No active exchange")
 
-            self._waiting[peer_id] = (self._round_id, self._exchange_id)
+            self._waiting[peer_id] = self._progress
 
     def is_waiting(self, peer_id: str, msg: State) -> bool:
         with self._lock:
@@ -337,7 +325,7 @@ class Exchange:
             messages = self._received[peer_id]
 
             for progress in list(messages):
-                if progress[0] < self._round_id:
+                if progress[0] < self._progress[0]:
                     messages.pop(progress, None)
 
             if not messages:
@@ -491,7 +479,7 @@ class NetworkBackend:
             if msg.round_id < local[0]:
                 recover = Recover(round_id=local[0], exchange_id=local[1])
                 self._send_message(peer_id, recover)
-                progress = (local[0], 0)
+                progress = (local[0], remote[1])
 
             # Same-round lag.
             else:
