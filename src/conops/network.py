@@ -767,12 +767,13 @@ class Network:
 
         self._thread = None
 
-    def reset(self) -> None:
+    def _reset(self) -> None:
         """
-        Resets the network to its initial state.
+        Reset the local exchange state to its initial state.
 
-        This method clears all cached messages and resets the round and exchange identifiers.
-        It should be called when the network is idle (i.e., not actively exchanging messages).
+        The caller must ensure that no exchange is active and that the current
+        exchange state is no longer needed by any peer. This method performs no
+        distributed synchronization.
         """
         self._exchange.reset()
 
