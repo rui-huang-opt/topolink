@@ -2,7 +2,6 @@ import typing
 import threading
 import uuid
 import logging
-from dataclasses import dataclass
 
 import zmq
 import pyre
@@ -35,72 +34,6 @@ class Replay(msgspec.Struct, tag="REPLAY", tag_field="type", frozen=True):
 
 
 Message = State | Recover | Replay
-
-
-@dataclass(slots=True)
-class PeerInfo:
-    pyre_uuid: uuid.UUID | None = None
-    reachable: bool = False
-
-
-class PeerRegistry:
-    """
-    Maintains runtime information for known peers.
-    """
-
-    def __init__(self) -> None:
-        self._peers: dict[str, PeerInfo] = {}
-        self._uuid_to_node_id: dict[uuid.UUID, str] = {}
-
-    def get_or_create_peer(self, node_id: str) -> PeerInfo:
-        peer = self._peers.get(node_id)
-
-        if peer is None:
-            peer = PeerInfo()
-            self._peers[node_id] = peer
-
-        return peer
-
-    def get_peer_id_by_uuid(self, pyre_uuid: uuid.UUID) -> str | None:
-        return self._uuid_to_node_id.get(pyre_uuid)
-
-    def get_uuid_by_peer_id(self, node_id: str) -> uuid.UUID | None:
-        peer = self._peers.get(node_id)
-
-        if peer is None or not peer.reachable or peer.pyre_uuid is None:
-            return None
-
-        return peer.pyre_uuid
-
-    def mark_reachable(self, node_id: str, pyre_uuid: uuid.UUID) -> PeerInfo:
-        peer = self.get_or_create_peer(node_id)
-
-        previous_uuid = peer.pyre_uuid
-
-        if previous_uuid is not None and previous_uuid != pyre_uuid:
-            self._uuid_to_node_id.pop(previous_uuid, None)
-
-        peer.pyre_uuid = pyre_uuid
-        peer.reachable = True
-
-        self._uuid_to_node_id[pyre_uuid] = node_id
-
-        return peer
-
-    def mark_unreachable(self, pyre_uuid: uuid.UUID) -> PeerInfo | None:
-        node_id = self._uuid_to_node_id.get(pyre_uuid)
-
-        if node_id is None:
-            return None
-
-        peer = self._peers.get(node_id)
-
-        if peer is None or peer.pyre_uuid != pyre_uuid:
-            return None
-
-        peer.reachable = False
-
-        return peer
 
 
 class Exchange:
@@ -348,7 +281,7 @@ class NetworkBackend:
         self._node = node
         self._router = router
 
-        self._peers = PeerRegistry()
+        self._peers: dict[str, uuid.UUID] = {}
 
     def handle_pyre_event(self, event: list[bytes]) -> None:
         if not event:
@@ -418,11 +351,11 @@ class NetworkBackend:
         if namespace != self._namespace:
             return
 
-        peer = self._peers.get_or_create_peer(peer_id)
+        peer_uuid = self._peers.get(peer_id)
 
-        restarted = peer.pyre_uuid is not None and peer.pyre_uuid != pyre_uuid
+        restarted = peer_uuid is not None and peer_uuid != pyre_uuid
 
-        self._peers.mark_reachable(node_id=peer_id, pyre_uuid=pyre_uuid)
+        self._peers[peer_id] = pyre_uuid
 
         if restarted:
             self._exchange.clear_received(peer_id)
@@ -434,12 +367,22 @@ class NetworkBackend:
             self._send_message_by_uuid(pyre_uuid, msg)
 
     def _handle_exit(self, event: list[bytes]) -> None:
+        peer_id = self._extract_node_id(event)
+
+        if peer_id is None:
+            return
+
         pyre_uuid = self._extract_uuid(event)
 
         if pyre_uuid is None:
             return
 
-        self._peers.mark_unreachable(pyre_uuid=pyre_uuid)
+        peer_uuid = self._peers.get(peer_id)
+
+        if peer_uuid is None or peer_uuid != pyre_uuid:
+            return
+
+        self._peers.pop(peer_id, None)
 
     def _handle_whisper(self, event: list[bytes]) -> None:
         peer_id = self._extract_node_id(event)
@@ -561,7 +504,7 @@ class NetworkBackend:
         self._router.send_multipart([peer_id.encode("utf-8"), msg.meta, msg.payload])
 
     def _send_message(self, peer_id: str, msg: Message) -> None:
-        pyre_uuid = self._peers.get_uuid_by_peer_id(peer_id)
+        pyre_uuid = self._peers.get(peer_id)
 
         if pyre_uuid is None:
             return
