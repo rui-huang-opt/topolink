@@ -1,6 +1,5 @@
 import typing
 import threading
-import time
 import uuid
 import logging
 from dataclasses import dataclass
@@ -41,7 +40,6 @@ Message = State | Recover | Replay
 @dataclass(slots=True)
 class PeerInfo:
     pyre_uuid: uuid.UUID | None = None
-    last_seen: float = 0.0
     reachable: bool = False
 
 
@@ -74,9 +72,7 @@ class PeerRegistry:
 
         return peer.pyre_uuid
 
-    def mark_reachable(
-        self, node_id: str, pyre_uuid: uuid.UUID, last_seen: float
-    ) -> PeerInfo:
+    def mark_reachable(self, node_id: str, pyre_uuid: uuid.UUID) -> PeerInfo:
         peer = self.get_or_create_peer(node_id)
 
         previous_uuid = peer.pyre_uuid
@@ -85,16 +81,13 @@ class PeerRegistry:
             self._uuid_to_node_id.pop(previous_uuid, None)
 
         peer.pyre_uuid = pyre_uuid
-        peer.last_seen = last_seen
         peer.reachable = True
 
         self._uuid_to_node_id[pyre_uuid] = node_id
 
         return peer
 
-    def mark_unreachable(
-        self, pyre_uuid: uuid.UUID, last_seen: float
-    ) -> PeerInfo | None:
+    def mark_unreachable(self, pyre_uuid: uuid.UUID) -> PeerInfo | None:
         node_id = self._uuid_to_node_id.get(pyre_uuid)
 
         if node_id is None:
@@ -106,7 +99,6 @@ class PeerRegistry:
             return None
 
         peer.reachable = False
-        peer.last_seen = last_seen
 
         return peer
 
@@ -358,16 +350,14 @@ class NetworkBackend:
         except UnicodeDecodeError:
             return
 
-        timestamp = time.time()
+        if event_type == "WHISPER":
+            self._handle_whisper(event)
 
-        if event_type == "ENTER":
-            self._handle_enter(event, timestamp)
+        elif event_type == "ENTER":
+            self._handle_enter(event)
 
         elif event_type == "EXIT":
-            self._handle_exit(event, timestamp)
-
-        elif event_type == "WHISPER":
-            self._handle_whisper(event)
+            self._handle_exit(event)
 
     def handle_frontend_message(self, frames: list[bytes]) -> None:
         if len(frames) != 3:
@@ -403,7 +393,7 @@ class NetworkBackend:
 
         self._send_message(peer_id, msg)
 
-    def _handle_enter(self, event: list[bytes], timestamp: float) -> None:
+    def _handle_enter(self, event: list[bytes]) -> None:
         pyre_uuid = self._extract_uuid(event)
 
         if pyre_uuid is None:
@@ -423,11 +413,7 @@ class NetworkBackend:
 
         restarted = peer.pyre_uuid is not None and peer.pyre_uuid != pyre_uuid
 
-        self._peers.mark_reachable(
-            node_id=peer_id,
-            pyre_uuid=pyre_uuid,
-            last_seen=timestamp,
-        )
+        self._peers.mark_reachable(node_id=peer_id, pyre_uuid=pyre_uuid)
 
         if restarted:
             self._exchange.clear_received(peer_id)
@@ -438,13 +424,13 @@ class NetworkBackend:
         if msg is not None:
             self._send_message_by_uuid(pyre_uuid, msg)
 
-    def _handle_exit(self, event: list[bytes], timestamp: float) -> None:
+    def _handle_exit(self, event: list[bytes]) -> None:
         pyre_uuid = self._extract_uuid(event)
 
         if pyre_uuid is None:
             return
 
-        self._peers.mark_unreachable(pyre_uuid=pyre_uuid, last_seen=timestamp)
+        self._peers.mark_unreachable(pyre_uuid=pyre_uuid)
 
     def _handle_whisper(self, event: list[bytes]) -> None:
         peer_id = self._extract_node_id(event)
