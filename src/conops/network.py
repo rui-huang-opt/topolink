@@ -696,6 +696,10 @@ class Network:
         return self._neighbors.keys()
 
     @property
+    def degree(self) -> int:
+        return len(self._neighbors)
+
+    @property
     def round_id(self) -> int:
         return self._exchange.round_id
 
