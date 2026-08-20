@@ -175,16 +175,18 @@ class Exchange:
 
             return self._progress
 
+    def reset(self) -> None:
+        with self._lock:
+            self._ensure_idle()
+
+            self._progress = (0, 0)
+            self._sent.clear()
+            self._received.clear()
+            self._delivered.clear()
+
     def advance_round(self) -> int:
         with self._lock:
-            if self._active:
-                raise RuntimeError("Cannot advance round during an active exchange")
-
-            if self._waiting:
-                raise RuntimeError(
-                    f"Cannot advance round with outstanding waits: "
-                    f"{tuple(self._waiting)}"
-                )
+            self._ensure_idle()
 
             self._progress = (self._progress[0] + 1, 0)
 
@@ -322,6 +324,13 @@ class Exchange:
 
             if not messages:
                 self._received.pop(peer_id, None)
+
+    def _ensure_idle(self) -> None:
+        if self._active:
+            raise RuntimeError("Exchange is active")
+
+        if self._waiting:
+            raise RuntimeError(f"Waiting peers: {tuple(self._waiting)}")
 
 
 class NetworkBackend:
@@ -757,6 +766,17 @@ class Network:
             return
 
         self._thread = None
+
+    def reset(self) -> None:
+        """
+        Resets the network to its initial state.
+
+        This method clears all cached sent and received states, resets the
+        current round and exchange identifiers to zero, and prepares the
+        network for a fresh start. It should be called when the network is
+        idle (i.e., not in the middle of an active exchange).
+        """
+        self._exchange.reset()
 
     def next_round(self) -> int:
         """
