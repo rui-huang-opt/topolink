@@ -281,7 +281,9 @@ class NetworkBackend:
         self._node = node
         self._router = router
 
-        self._peers: dict[str, uuid.UUID] = {}
+        # Reverse index for Pyre peers:
+        # logical node ID -> current Pyre UUID
+        self._peer_uuids: dict[str, uuid.UUID] = {}
 
     def handle_pyre_event(self, event: list[bytes]) -> None:
         if not event:
@@ -351,11 +353,11 @@ class NetworkBackend:
         if namespace != self._namespace:
             return
 
-        peer_uuid = self._peers.get(peer_id)
+        peer_uuid = self._peer_uuids.get(peer_id)
 
         restarted = peer_uuid is not None and peer_uuid != pyre_uuid
 
-        self._peers[peer_id] = pyre_uuid
+        self._peer_uuids[peer_id] = pyre_uuid
 
         if restarted:
             self._exchange.clear_received(peer_id)
@@ -377,12 +379,12 @@ class NetworkBackend:
         if pyre_uuid is None:
             return
 
-        peer_uuid = self._peers.get(peer_id)
+        peer_uuid = self._peer_uuids.get(peer_id)
 
         if peer_uuid is None or peer_uuid != pyre_uuid:
             return
 
-        self._peers.pop(peer_id, None)
+        self._peer_uuids.pop(peer_id, None)
 
     def _handle_whisper(self, event: list[bytes]) -> None:
         peer_id = self._extract_node_id(event)
@@ -504,7 +506,7 @@ class NetworkBackend:
         self._router.send_multipart([peer_id.encode("utf-8"), msg.meta, msg.payload])
 
     def _send_message(self, peer_id: str, msg: Message) -> None:
-        pyre_uuid = self._peers.get(peer_id)
+        pyre_uuid = self._peer_uuids.get(peer_id)
 
         if pyre_uuid is None:
             return
